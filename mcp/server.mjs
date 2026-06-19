@@ -8,7 +8,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 
 const SERVER_NAME = "acp-coding-agent-dispatcher";
-const SERVER_VERSION = "0.2.1";
+const SERVER_VERSION = "0.3.0";
 const DATA_DIR = path.join(os.homedir(), ".codex", "agent-dispatcher");
 const REGISTRY_PATH = path.join(DATA_DIR, "registry.json");
 const CONFIG_PATH = path.join(DATA_DIR, "config.json");
@@ -409,30 +409,11 @@ async function createJob(args) {
     ? { skipped: true, reason: "collectDiff disabled" }
     : await collectWorktreeState(args.worktree);
   const launchingEnabled = config.safety.launchExternalAgents === true;
-  const unsupportedLaunch = launchingEnabled && selectedAgent.id !== "opencode";
-  const asyncLaunch = launchingEnabled && args.async !== false;
-  const adapterStatus = launchingEnabled
-    ? unsupportedLaunch
-      ? "adapter_not_implemented"
-      : asyncLaunch
-        ? "async_not_implemented"
-        : "starting"
-    : "record_only";
-  const initialStatus = launchingEnabled
-    ? unsupportedLaunch || asyncLaunch ? "failed" : "running"
-    : "completed";
-  const initialSummary = launchingEnabled
-    ? unsupportedLaunch
-      ? `External launch is not implemented for ${selectedAgent.id}.`
-      : asyncLaunch
-        ? "External launch currently requires async=false."
-        : "Starting OpenCode ACP adapter."
-    : "Recorded dispatcher job, selected agent, session binding, and current worktree state without launching an external process.";
-  const initialRisks = launchingEnabled && !unsupportedLaunch && !asyncLaunch
-    ? []
-    : launchingEnabled
-      ? ["External launch was requested, but no runnable adapter path was selected."]
-      : ["No external agent process was launched in this alpha build."];
+  const launchPlan = planLaunch({ launchingEnabled, selectedAgent, async: args.async });
+  const adapterStatus = launchPlan.adapterStatus;
+  const initialStatus = launchPlan.runnable ? "running" : launchPlan.status;
+  const initialSummary = launchPlan.summary;
+  const initialRisks = launchPlan.risks;
   const recentEvents = [
     {
       type: "job_created",
@@ -492,14 +473,22 @@ async function createJob(args) {
   await writeRegistry(registry);
   await appendJsonl(logPath, recentEvents.map((event) => ({ ...event, jobId, sessionId, agentId: selected.agentId })));
 
-  if (launchingEnabled && !unsupportedLaunch && !asyncLaunch) {
-    const runResult = await runOpenCodeAcpJob({
-      args,
-      job,
-      session,
-      selectedAgent,
-      timeoutSec: args.timeoutSec ?? 3600
-    });
+  if (launchPlan.runnable) {
+    const runResult = launchPlan.kind === "opencode_acp"
+      ? await runOpenCodeAcpJob({
+        args,
+        job,
+        session,
+        selectedAgent,
+        timeoutSec: args.timeoutSec ?? 3600
+      })
+      : await runCliFallbackJob({
+        args,
+        job,
+        session,
+        selectedAgent,
+        timeoutSec: args.timeoutSec ?? 3600
+      });
     Object.assign(job, runResult.jobPatch);
     Object.assign(session, runResult.sessionPatch);
     job.recentEvents = [...job.recentEvents, ...runResult.events];
@@ -807,6 +796,56 @@ function findActiveWorktreeJob(registry, worktree, permissionProfile) {
   )) ?? null;
 }
 
+function planLaunch({ launchingEnabled, selectedAgent, async }) {
+  if (!launchingEnabled) {
+    return {
+      kind: "record_only",
+      runnable: false,
+      status: "completed",
+      adapterStatus: "record_only",
+      summary: "Recorded dispatcher job, selected agent, session binding, and current worktree state without launching an external process.",
+      risks: ["No external agent process was launched in this alpha build."]
+    };
+  }
+  if (async !== false) {
+    return {
+      kind: "unsupported",
+      runnable: false,
+      status: "failed",
+      adapterStatus: "async_not_implemented",
+      summary: "External launch currently requires async=false.",
+      risks: ["External launch was requested, but async job execution is not implemented yet."]
+    };
+  }
+  if (selectedAgent.id === "opencode") {
+    return {
+      kind: "opencode_acp",
+      runnable: true,
+      adapterStatus: "starting",
+      summary: "Starting OpenCode ACP adapter.",
+      risks: []
+    };
+  }
+  const cliSpec = getCliAdapterSpec(selectedAgent.id);
+  if (cliSpec) {
+    return {
+      kind: "cli_fallback",
+      runnable: true,
+      adapterStatus: "starting",
+      summary: `Starting ${selectedAgent.displayName} CLI fallback adapter.`,
+      risks: []
+    };
+  }
+  return {
+    kind: "unsupported",
+    runnable: false,
+    status: "failed",
+    adapterStatus: "adapter_not_implemented",
+    summary: `External launch is not implemented for ${selectedAgent.id}.`,
+    risks: ["External launch was requested, but no runnable adapter path was selected."]
+  };
+}
+
 async function runOpenCodeAcpJob({ args, job, session, selectedAgent, timeoutSec }) {
   const events = [];
   const startedAt = Date.now();
@@ -913,7 +952,7 @@ async function runOpenCodeAcpJob({ args, job, session, selectedAgent, timeoutSec
       : await collectWorktreeState(args.worktree);
     const collectedEvents = [...events, ...client.drainLogEvents()];
     const agentErrors = extractAgentErrors(collectedEvents);
-    const failureReason = buildFailureReason(error, agentErrors);
+    const failureReason = buildFailureReason("OpenCode ACP", error, agentErrors);
     return {
       events: [
         ...collectedEvents,
@@ -951,6 +990,231 @@ async function runOpenCodeAcpJob({ args, job, session, selectedAgent, timeoutSec
   } finally {
     client.dispose();
   }
+}
+
+async function runCliFallbackJob({ args, job, session, selectedAgent, timeoutSec }) {
+  const spec = getCliAdapterSpec(selectedAgent.id);
+  if (!spec) throw new Error(`No CLI adapter is registered for ${selectedAgent.id}.`);
+  const startedAt = Date.now();
+  const prompt = buildDispatchPrompt(args.prompt);
+  const providerSessionId = session.providerSessionId ?? null;
+  const command = selectedAgent.installedPath ?? selectedAgent.executable;
+  const commandArgs = spec.buildArgs({
+    prompt,
+    worktree: args.worktree,
+    permissionProfile: job.permissionProfile,
+    providerSessionId
+  });
+  const startedEvent = {
+    type: "cli_started",
+    timestamp: new Date().toISOString(),
+    message: `Started ${spec.label} CLI fallback adapter.`,
+    command: [path.basename(command), ...commandArgs.map((part) => part === prompt ? "<prompt>" : part)]
+  };
+  const result = await runCliProcess({
+    command,
+    args: commandArgs,
+    cwd: args.worktree,
+    timeoutMs: timeoutSec * 1000
+  });
+  const endedAt = new Date().toISOString();
+  const stdoutEvents = parseCliStream(result.stdout, "stdout");
+  const stderrEvents = parseCliStream(result.stderr, "stderr");
+  const events = [
+    startedEvent,
+    ...stdoutEvents,
+    ...stderrEvents,
+    buildCliProcessClosedEvent(spec.label, startedAt, result)
+  ];
+  const afterState = args.collectDiff === false
+    ? { skipped: true, reason: "collectDiff disabled" }
+    : await collectWorktreeState(args.worktree);
+  const changedFiles = diffChangedFiles(job.worktreeState, afterState);
+  const nextProviderSessionId = providerSessionId ?? findCliSessionId(events);
+
+  if (result.exitCode === 0 && !result.timedOut && !result.error) {
+    const agentText = extractCliText(events);
+    return {
+      events,
+      sessionPatch: {
+        providerSessionId: nextProviderSessionId,
+        status: "idle",
+        canContinue: true
+      },
+      jobPatch: {
+        status: "completed",
+        endedAt,
+        adapterStatus: spec.adapterStatus,
+        providerSessionId: nextProviderSessionId,
+        stopReason: null,
+        failureReason: null,
+        agentErrors: [],
+        changedFiles,
+        worktreeState: {
+          before: job.worktreeState,
+          after: afterState
+        },
+        resultSummary: agentText || `${spec.label} CLI completed.`,
+        validation: [],
+        risks: []
+      }
+    };
+  }
+
+  const failure = result.error ?? new Error(result.timedOut
+    ? `${spec.label} CLI timed out after ${timeoutSec}s.`
+    : `${spec.label} CLI exited with code ${result.exitCode}.`);
+  if (result.timedOut) failure.code = "timeout";
+  const agentErrors = extractAgentErrors(events);
+  const failureReason = buildFailureReason(`${spec.label} CLI`, failure, agentErrors);
+  return {
+    events: [
+      ...events,
+      {
+        type: "cli_error",
+        timestamp: endedAt,
+        message: failureReason,
+        errorMessage: failure.message,
+        agentErrors
+      }
+    ],
+    sessionPatch: {
+      providerSessionId: nextProviderSessionId,
+      status: "idle",
+      canContinue: true
+    },
+    jobPatch: {
+      status: result.timedOut ? "timed_out" : "failed",
+      endedAt,
+      adapterStatus: spec.adapterStatus,
+      providerSessionId: nextProviderSessionId,
+      failureReason,
+      agentErrors,
+      changedFiles,
+      worktreeState: {
+        before: job.worktreeState,
+        after: afterState
+      },
+      resultSummary: failureReason,
+      validation: [],
+      risks: ["Inspect the job log before re-running the agent."]
+    }
+  };
+}
+
+function getCliAdapterSpec(agentId) {
+  const specs = {
+    "cursor-agent": {
+      label: "Cursor Agent",
+      adapterStatus: "cursor_agent_cli",
+      buildArgs: ({ prompt, worktree, permissionProfile, providerSessionId }) => [
+        "--cwd",
+        worktree,
+        "--output-format",
+        "streaming-json",
+        "--permission-mode",
+        mapAgentPermissionMode(permissionProfile),
+        ...(providerSessionId ? ["--resume", providerSessionId] : []),
+        "--single",
+        prompt
+      ]
+    },
+    claude: {
+      label: "Claude Code",
+      adapterStatus: "claude_cli",
+      buildArgs: ({ prompt, permissionProfile, providerSessionId }) => [
+        "-p",
+        "--output-format",
+        "stream-json",
+        "--permission-mode",
+        mapAgentPermissionMode(permissionProfile),
+        ...(providerSessionId ? ["--resume", providerSessionId] : []),
+        prompt
+      ]
+    },
+    codex: {
+      label: "Codex",
+      adapterStatus: "codex_cli",
+      buildArgs: ({ prompt, worktree, permissionProfile, providerSessionId }) => {
+        if (providerSessionId) {
+          return [
+            "exec",
+            "resume",
+            "--json",
+            ...(permissionProfile === "bypass_permissions" ? ["--dangerously-bypass-approvals-and-sandbox"] : []),
+            providerSessionId,
+            prompt
+          ];
+        }
+        return [
+          "exec",
+          "--json",
+          "--cd",
+          worktree,
+          ...(permissionProfile === "bypass_permissions"
+            ? ["--dangerously-bypass-approvals-and-sandbox"]
+            : ["--sandbox", mapCodexSandbox(permissionProfile)]),
+          prompt
+        ];
+      }
+    }
+  };
+  return specs[agentId] ?? null;
+}
+
+function mapAgentPermissionMode(permissionProfile) {
+  if (permissionProfile === "plan") return "plan";
+  if (permissionProfile === "bypass_permissions") return "bypassPermissions";
+  return "acceptEdits";
+}
+
+function mapCodexSandbox(permissionProfile) {
+  if (permissionProfile === "plan") return "read-only";
+  return "workspace-write";
+}
+
+function runCliProcess({ command, args, cwd, timeoutMs }) {
+  return new Promise((resolve) => {
+    const child = spawn(command, args, {
+      cwd,
+      stdio: ["ignore", "pipe", "pipe"],
+      env: safeEnv()
+    });
+    let stdout = "";
+    let stderr = "";
+    let timedOut = false;
+    let processError = null;
+    let settled = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGTERM");
+    }, timeoutMs);
+
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => {
+      stdout = appendLimited(stdout, chunk, 200_000);
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr = appendLimited(stderr, chunk, 200_000);
+    });
+    child.on("error", (error) => {
+      processError = error;
+    });
+    child.on("close", (exitCode, signal) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve({ stdout, stderr, exitCode, signal, timedOut, error: processError });
+    });
+  });
+}
+
+function appendLimited(current, chunk, maxLength) {
+  if (current.length >= maxLength) return current;
+  const next = `${current}${chunk}`;
+  if (next.length <= maxLength) return next;
+  return `${next.slice(0, maxLength)}\n[dispatcher truncated captured output]\n`;
 }
 
 class AcpStdioClient {
@@ -1180,6 +1444,103 @@ function extractAgentText(events) {
   return chunks.join("").trim();
 }
 
+function parseCliStream(output, stream) {
+  return output
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      try {
+        const payload = JSON.parse(line);
+        return {
+          type: `cli_${stream}_json`,
+          timestamp: new Date().toISOString(),
+          stream,
+          message: preview(readableTextFromValue(payload) || payload.type || payload.event || "JSON output", 500),
+          payload
+        };
+      } catch {
+        return {
+          type: `cli_${stream}`,
+          timestamp: new Date().toISOString(),
+          stream,
+          message: preview(line, 500)
+        };
+      }
+    });
+}
+
+function extractCliText(events) {
+  const chunks = [];
+  for (const event of events) {
+    if (event.stream === "stderr") continue;
+    if (event.payload) {
+      const text = readableTextFromValue(event.payload);
+      if (text) chunks.push(text);
+    } else if (event.type === "cli_stdout" && event.message) {
+      chunks.push(event.message);
+    }
+  }
+  return uniqueStrings(chunks.map((chunk) => preview(chunk, 2000))).join("\n").trim();
+}
+
+function readableTextFromValue(value) {
+  return collectReadableText(value)
+    .map((text) => text.trim())
+    .filter(Boolean)
+    .join("\n")
+    .trim();
+}
+
+function collectReadableText(value, depth = 0) {
+  if (depth > 6 || value == null) return [];
+  if (typeof value === "string") return [];
+  if (Array.isArray(value)) {
+    return value.flatMap((item) => collectReadableText(item, depth + 1));
+  }
+  if (typeof value !== "object") return [];
+  const chunks = [];
+  for (const [key, child] of Object.entries(value)) {
+    if (typeof child === "string" && /^(text|content|message|summary|result|response|output|delta|final_answer)$/i.test(key)) {
+      chunks.push(child);
+    } else {
+      chunks.push(...collectReadableText(child, depth + 1));
+    }
+  }
+  return chunks;
+}
+
+function findCliSessionId(events) {
+  for (const event of events) {
+    const value = findSessionIdInValue(event.payload);
+    if (value) return value;
+  }
+  return null;
+}
+
+function findSessionIdInValue(value, depth = 0) {
+  if (depth > 6 || value == null) return null;
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const found = findSessionIdInValue(item, depth + 1);
+      if (found) return found;
+    }
+    return null;
+  }
+  if (typeof value !== "object") return null;
+  for (const [key, child] of Object.entries(value)) {
+    if (
+      typeof child === "string"
+      && /^(sessionId|session_id|conversationId|conversation_id|threadId|thread_id)$/i.test(key)
+    ) {
+      return child;
+    }
+    const found = findSessionIdInValue(child, depth + 1);
+    if (found) return found;
+  }
+  return null;
+}
+
 const AGENT_ERROR_PATTERNS = [
   /insufficient balance/i,
   /rate limit/i,
@@ -1202,6 +1563,8 @@ function extractAgentErrors(events) {
     candidates.push(event.params?.update?.message);
     candidates.push(event.params?.error?.message);
     candidates.push(event.result?.error?.message);
+    candidates.push(event.payload?.error?.message);
+    candidates.push(...collectStrings(event.payload));
   }
   return uniqueStrings(
     candidates
@@ -1212,12 +1575,20 @@ function extractAgentErrors(events) {
   ).slice(0, 5);
 }
 
-function buildFailureReason(error, agentErrors) {
+function collectStrings(value, depth = 0) {
+  if (depth > 5 || value == null) return [];
+  if (typeof value === "string") return [value];
+  if (Array.isArray(value)) return value.flatMap((item) => collectStrings(item, depth + 1));
+  if (typeof value !== "object") return [];
+  return Object.values(value).flatMap((item) => collectStrings(item, depth + 1));
+}
+
+function buildFailureReason(adapterLabel, error, agentErrors) {
   if (agentErrors.length > 0) {
     const suffix = error.code === "timeout" ? " (request timed out after agent error)" : "";
-    return `OpenCode ACP failed: ${agentErrors.join("; ")}${suffix}`;
+    return `${adapterLabel} failed: ${agentErrors.join("; ")}${suffix}`;
   }
-  return `OpenCode ACP failed: ${error.message}`;
+  return `${adapterLabel} failed: ${error.message}`;
 }
 
 function uniqueStrings(values) {
@@ -1243,6 +1614,17 @@ function buildAcpProcessClosedEvent(startedAt) {
     type: "acp_process_closed",
     timestamp: new Date().toISOString(),
     message: `OpenCode ACP adapter finished after ${Date.now() - startedAt}ms.`
+  };
+}
+
+function buildCliProcessClosedEvent(label, startedAt, result) {
+  return {
+    type: "cli_process_closed",
+    timestamp: new Date().toISOString(),
+    message: `${label} CLI adapter finished after ${Date.now() - startedAt}ms with exitCode=${result.exitCode ?? "unknown"} signal=${result.signal ?? "none"}.`,
+    exitCode: result.exitCode,
+    signal: result.signal,
+    timedOut: result.timedOut
   };
 }
 

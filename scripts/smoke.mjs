@@ -20,13 +20,16 @@ try {
   await mkdir(tempBin, { recursive: true });
   await execFileAsync("git", ["-C", tempWorktree, "init", "-b", "master"]);
   await createFakeOpenCode(tempBin);
+  await createFakeClaude(tempBin);
+  await createFakeCursorAgent(tempBin);
+  await createFakeCodex(tempBin);
 
   const result = await runMcpSmoke(tempHome, tempWorktree, tempBin);
   console.log(JSON.stringify(result, null, 2));
 
   if (
     result.stderr
-    || result.serverVersion !== "0.2.1"
+    || result.serverVersion !== "0.3.0"
     || result.discoveryCount < 1
     || result.runStatus !== "completed"
     || result.adapterStatus !== "opencode_acp"
@@ -34,6 +37,15 @@ try {
     || result.failureStatus !== "timed_out"
     || !result.failureReason?.includes("Insufficient balance")
     || !result.agentErrors?.some((error) => error.includes("Rate limit exceeded"))
+    || result.claudeStatus !== "completed"
+    || result.claudeAdapterStatus !== "claude_cli"
+    || result.claudeProviderSessionId !== "fake-claude-session"
+    || result.cursorStatus !== "completed"
+    || result.cursorAdapterStatus !== "cursor_agent_cli"
+    || result.cursorProviderSessionId !== "fake-cursor-session"
+    || result.codexStatus !== "completed"
+    || result.codexAdapterStatus !== "codex_cli"
+    || result.codexProviderSessionId !== "fake-codex-session"
   ) {
     process.exitCode = 1;
   }
@@ -79,6 +91,45 @@ process.stdin.on("data", (chunk) => {
 function write(message) {
   process.stdout.write(JSON.stringify(message) + "\\n");
 }
+`;
+  await writeFile(scriptPath, script, "utf8");
+  await chmod(scriptPath, 0o755);
+}
+
+async function createFakeClaude(binDir) {
+  const scriptPath = path.join(binDir, "claude");
+  const script = `#!/usr/bin/env node
+if (process.argv.includes("--version") || process.argv.includes("-v")) {
+  console.log("fake-claude 0.0.0");
+  process.exit(0);
+}
+console.log(JSON.stringify({ type: "assistant", session_id: "fake-claude-session", message: { content: [{ type: "text", text: "Fake Claude completed." }] } }));
+`;
+  await writeFile(scriptPath, script, "utf8");
+  await chmod(scriptPath, 0o755);
+}
+
+async function createFakeCursorAgent(binDir) {
+  const scriptPath = path.join(binDir, "agent");
+  const script = `#!/usr/bin/env node
+if (process.argv.includes("--version") || process.argv.includes("-v")) {
+  console.log("fake-agent 0.0.0");
+  process.exit(0);
+}
+console.log(JSON.stringify({ type: "message", sessionId: "fake-cursor-session", message: "Fake Cursor Agent completed." }));
+`;
+  await writeFile(scriptPath, script, "utf8");
+  await chmod(scriptPath, 0o755);
+}
+
+async function createFakeCodex(binDir) {
+  const scriptPath = path.join(binDir, "codex");
+  const script = `#!/usr/bin/env node
+if (process.argv.includes("--version") || process.argv.includes("-V")) {
+  console.log("fake-codex 0.0.0");
+  process.exit(0);
+}
+console.log(JSON.stringify({ type: "agent_message", session_id: "fake-codex-session", message: "Fake Codex completed." }));
 `;
   await writeFile(scriptPath, script, "utf8");
   await chmod(scriptPath, 0o755);
@@ -164,6 +215,52 @@ async function runMcpSmoke(home, worktree, binDir) {
     }
   });
   await waitForMessage(() => parseMessages(stdout).find((message) => message.id === 5), 4000);
+  send(child, {
+    jsonrpc: "2.0",
+    id: 6,
+    method: "tools/call",
+    params: {
+      name: "run_coding_agent",
+      arguments: {
+        agent: "claude",
+        worktree,
+        prompt: "Smoke test Claude CLI",
+        async: false,
+        permissionProfile: "workspace_write"
+      }
+    }
+  });
+  send(child, {
+    jsonrpc: "2.0",
+    id: 7,
+    method: "tools/call",
+    params: {
+      name: "run_coding_agent",
+      arguments: {
+        agent: "cursor-agent",
+        worktree,
+        prompt: "Smoke test Cursor Agent CLI",
+        async: false,
+        permissionProfile: "workspace_write"
+      }
+    }
+  });
+  send(child, {
+    jsonrpc: "2.0",
+    id: 8,
+    method: "tools/call",
+    params: {
+      name: "run_coding_agent",
+      arguments: {
+        agent: "codex",
+        worktree,
+        prompt: "Smoke test Codex CLI",
+        async: false,
+        permissionProfile: "workspace_write"
+      }
+    }
+  });
+  await waitForMessage(() => parseMessages(stdout).find((message) => message.id === 8), 4000);
   child.kill("SIGTERM");
 
   const messages = parseMessages(stdout);
@@ -185,6 +282,15 @@ async function runMcpSmoke(home, worktree, binDir) {
     failureReason: parsedToolResults[5]?.failureReason,
     agentErrors: parsedToolResults[5]?.agentErrors,
     failureProviderSessionId: parsedToolResults[5]?.providerSessionId,
+    claudeStatus: parsedToolResults[6]?.status,
+    claudeAdapterStatus: parsedToolResults[6]?.adapterStatus,
+    claudeProviderSessionId: parsedToolResults[6]?.providerSessionId,
+    cursorStatus: parsedToolResults[7]?.status,
+    cursorAdapterStatus: parsedToolResults[7]?.adapterStatus,
+    cursorProviderSessionId: parsedToolResults[7]?.providerSessionId,
+    codexStatus: parsedToolResults[8]?.status,
+    codexAdapterStatus: parsedToolResults[8]?.adapterStatus,
+    codexProviderSessionId: parsedToolResults[8]?.providerSessionId,
     isGitRepository: parsedToolResults[4]?.worktreeState?.after?.isGitRepository
   };
 }

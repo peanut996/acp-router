@@ -32,7 +32,7 @@ try {
 
   if (
     result.stderr
-    || result.serverVersion !== "0.4.3"
+    || result.serverVersion !== "0.5.0"
     || result.discoveryCount < 1
     || result.runStatus !== "completed"
     || result.adapterStatus !== "opencode_acp"
@@ -52,6 +52,10 @@ try {
     || result.codexStatus !== "completed"
     || result.codexAdapterStatus !== "codex_cli"
     || result.codexProviderSessionId !== "fake-codex-session"
+    || result.asyncStartStatus !== "running"
+    || result.cancelStatus !== "cancelled"
+    || result.cancelActiveProcessCancelled !== true
+    || result.cancelledJobStatus !== "cancelled"
   ) {
     process.exitCode = 1;
   }
@@ -117,7 +121,11 @@ if (process.env.AGENT_DISPATCHER_SMOKE_INHERITED !== "yes") {
   console.error("expected inherited environment");
   process.exit(1);
 }
-console.log(JSON.stringify({ type: "assistant", session_id: "fake-claude-session", message: { content: [{ type: "text", text: "Fake Claude completed." }] } }));
+if (process.argv.join(" ").includes("Smoke async cancel")) {
+  setInterval(() => {}, 1000);
+} else {
+  console.log(JSON.stringify({ type: "assistant", session_id: "fake-claude-session", message: { content: [{ type: "text", text: "Fake Claude completed." }] } }));
+}
 `;
   await writeFile(scriptPath, script, "utf8");
   await chmod(scriptPath, 0o755);
@@ -244,6 +252,7 @@ async function runMcpSmoke(home, worktree, binDirs) {
       }
     }
   });
+  await waitForMessage(() => parseMessages(stdout).find((message) => message.id === 6), 10_000);
   send(child, {
     jsonrpc: "2.0",
     id: 7,
@@ -259,6 +268,7 @@ async function runMcpSmoke(home, worktree, binDirs) {
       }
     }
   });
+  await waitForMessage(() => parseMessages(stdout).find((message) => message.id === 7), 10_000);
   send(child, {
     jsonrpc: "2.0",
     id: 8,
@@ -275,6 +285,49 @@ async function runMcpSmoke(home, worktree, binDirs) {
     }
   });
   await waitForMessage(() => parseMessages(stdout).find((message) => message.id === 8), 10_000);
+  send(child, {
+    jsonrpc: "2.0",
+    id: 9,
+    method: "tools/call",
+    params: {
+      name: "run_coding_agent",
+      arguments: {
+        agent: "claude",
+        worktree,
+        prompt: "Smoke async cancel",
+        async: true,
+        timeoutSec: 30,
+        permissionProfile: "workspace_write"
+      }
+    }
+  });
+  const asyncStart = await waitForMessage(() => parseMessages(stdout).find((message) => message.id === 9), 3000);
+  const asyncStartResult = parseToolResult(asyncStart);
+  send(child, {
+    jsonrpc: "2.0",
+    id: 10,
+    method: "tools/call",
+    params: {
+      name: "cancel_coding_agent_job",
+      arguments: {
+        jobId: asyncStartResult?.jobId,
+        reason: "Smoke cancel"
+      }
+    }
+  });
+  await waitForMessage(() => parseMessages(stdout).find((message) => message.id === 10), 3000);
+  send(child, {
+    jsonrpc: "2.0",
+    id: 11,
+    method: "tools/call",
+    params: {
+      name: "get_coding_agent_job",
+      arguments: {
+        jobId: asyncStartResult?.jobId
+      }
+    }
+  });
+  await waitForMessage(() => parseMessages(stdout).find((message) => message.id === 11), 3000);
   child.kill("SIGTERM");
 
   const messages = parseMessages(stdout);
@@ -310,6 +363,11 @@ async function runMcpSmoke(home, worktree, binDirs) {
     codexStatus: parsedToolResults[8]?.status,
     codexAdapterStatus: parsedToolResults[8]?.adapterStatus,
     codexProviderSessionId: parsedToolResults[8]?.providerSessionId,
+    asyncStartStatus: parsedToolResults[9]?.status,
+    asyncStartJobId: parsedToolResults[9]?.jobId,
+    cancelStatus: parsedToolResults[10]?.status,
+    cancelActiveProcessCancelled: parsedToolResults[10]?.activeProcessCancelled,
+    cancelledJobStatus: parsedToolResults[11]?.job?.status,
     isGitRepository: parsedToolResults[4]?.worktreeState?.after?.isGitRepository
   };
 }
@@ -327,6 +385,11 @@ async function waitForMessage(getMessage, timeoutMs) {
 function send(child, message) {
   const body = JSON.stringify(message);
   child.stdin.write(`Content-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`);
+}
+
+function parseToolResult(message) {
+  if (!message?.result?.content?.[0]?.text) return null;
+  return JSON.parse(message.result.content[0].text);
 }
 
 function parseMessages(output) {

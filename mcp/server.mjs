@@ -8,7 +8,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 
 const SERVER_NAME = "acp-coding-agent-dispatcher";
-const SERVER_VERSION = "0.4.3";
+const SERVER_VERSION = "0.5.0";
 const DATA_DIR = process.env.AGENT_DISPATCHER_DATA_DIR
   ? path.resolve(process.env.AGENT_DISPATCHER_DATA_DIR)
   : path.join(os.homedir(), ".codex", "agent-dispatcher");
@@ -18,6 +18,7 @@ const LOG_DIR = path.join(DATA_DIR, "logs");
 const COMMAND_TIMEOUT_MS = 3000;
 const ACP_STARTUP_DELAY_MS = 300;
 const execFileAsync = promisify(execFile);
+const ACTIVE_RUNS = new Map();
 
 const TOOL_DEFINITIONS = [
   {
@@ -111,7 +112,7 @@ const TOOL_DEFINITIONS = [
   },
   {
     name: "cancel_coding_agent_job",
-    description: "Mark a local dispatcher job as cancelled. Future adapters will terminate the backing agent process.",
+    description: "Cancel a dispatcher job and terminate an active child process when the current MCP server owns it.",
     inputSchema: {
       type: "object",
       required: ["jobId"],
@@ -416,7 +417,8 @@ async function createJob(args) {
     : await collectWorktreeState(args.worktree);
   const launchingEnabled = config.safety.launchExternalAgents === true;
   const agentEnv = safeEnv({ inheritEnvironment: config.safety.inheritEnvironment === true });
-  const launchPlan = planLaunch({ launchingEnabled, selectedAgent, async: args.async });
+  const asyncRequested = args.async !== false;
+  const launchPlan = planLaunch({ launchingEnabled, selectedAgent });
   const adapterStatus = launchPlan.adapterStatus;
   const initialStatus = launchPlan.runnable ? "running" : launchPlan.status;
   const initialSummary = launchPlan.summary;
@@ -481,32 +483,23 @@ async function createJob(args) {
   await appendJsonl(logPath, recentEvents.map((event) => ({ ...event, jobId, sessionId, agentId: selected.agentId })));
 
   if (launchPlan.runnable) {
-    const runResult = launchPlan.kind === "opencode_acp"
-      ? await runOpenCodeAcpJob({
-        args,
-        job,
-        session,
-        selectedAgent,
-        timeoutSec: args.timeoutSec ?? 3600,
-        agentEnv
-      })
-      : await runCliFallbackJob({
-        args,
-        job,
-        session,
-        selectedAgent,
-        timeoutSec: args.timeoutSec ?? 3600,
-        agentEnv
-      });
-    Object.assign(job, runResult.jobPatch);
-    Object.assign(session, runResult.sessionPatch);
-    job.recentEvents = [...job.recentEvents, ...runResult.events];
-    session.updatedAt = job.endedAt;
-    session.lastJobId = jobId;
-    registry.sessions[sessionId] = session;
-    registry.jobs[jobId] = job;
-    await writeRegistry(registry);
-    await appendJsonl(logPath, runResult.events.map((event) => ({ ...event, jobId, sessionId, agentId: selected.agentId })));
+    const runRequest = {
+      args,
+      job,
+      session,
+      selectedAgent,
+      timeoutSec: args.timeoutSec ?? 3600,
+      agentEnv,
+      launchKind: launchPlan.kind
+    };
+    if (asyncRequested) {
+      startBackgroundJobRun(runRequest);
+    } else {
+      await executeAndPersistJobRun(runRequest);
+      const updatedRegistry = await readRegistry();
+      Object.assign(job, updatedRegistry.jobs[jobId] ?? job);
+      Object.assign(session, updatedRegistry.sessions[sessionId] ?? session);
+    }
   }
 
   return {
@@ -535,6 +528,117 @@ async function createJob(args) {
   };
 }
 
+function startBackgroundJobRun(runRequest) {
+  executeAndPersistJobRun(runRequest).catch(async (error) => {
+    await markJobRunCrashed(runRequest, error);
+  });
+}
+
+async function executeAndPersistJobRun({ args, job, session, selectedAgent, timeoutSec, agentEnv, launchKind }) {
+  const controller = createRunController(job.jobId);
+  ACTIVE_RUNS.set(job.jobId, controller);
+  try {
+    const runResult = launchKind === "opencode_acp"
+      ? await runOpenCodeAcpJob({
+        args,
+        job,
+        session,
+        selectedAgent,
+        timeoutSec,
+        agentEnv,
+        controller
+      })
+      : await runCliFallbackJob({
+        args,
+        job,
+        session,
+        selectedAgent,
+        timeoutSec,
+        agentEnv,
+        controller
+      });
+    await persistJobRunResult({ job, session, selectedAgent, runResult });
+  } finally {
+    ACTIVE_RUNS.delete(job.jobId);
+  }
+}
+
+function createRunController(jobId) {
+  return {
+    jobId,
+    cancelRequested: false,
+    cancelReason: null,
+    cancelProcess: null,
+    cancel(reason) {
+      this.cancelRequested = true;
+      this.cancelReason = reason || "Cancelled by dispatcher caller.";
+      if (typeof this.cancelProcess === "function") this.cancelProcess();
+    }
+  };
+}
+
+async function persistJobRunResult({ job, session, selectedAgent, runResult }) {
+  const registry = await readRegistry();
+  const currentJob = registry.jobs[job.jobId] ?? job;
+  const currentSession = registry.sessions[session.sessionId] ?? session;
+  const jobPatch = currentJob.status === "cancelled" && runResult.jobPatch.status !== "cancelled"
+    ? {
+      ...runResult.jobPatch,
+      status: "cancelled",
+      endedAt: currentJob.endedAt ?? runResult.jobPatch.endedAt,
+      resultSummary: currentJob.resultSummary ?? "Cancelled by dispatcher caller.",
+      risks: currentJob.risks ?? []
+    }
+    : runResult.jobPatch;
+  Object.assign(currentJob, jobPatch);
+  Object.assign(currentSession, runResult.sessionPatch);
+  currentJob.recentEvents = [...(currentJob.recentEvents ?? []), ...runResult.events];
+  currentSession.updatedAt = currentJob.endedAt;
+  currentSession.lastJobId = currentJob.jobId;
+  registry.jobs[currentJob.jobId] = currentJob;
+  registry.sessions[currentSession.sessionId] = currentSession;
+  await writeRegistry(registry);
+  await appendJsonl(currentJob.logPath, runResult.events.map((event) => ({
+    ...event,
+    jobId: currentJob.jobId,
+    sessionId: currentJob.sessionId,
+    agentId: selectedAgent.id
+  })));
+}
+
+async function markJobRunCrashed(runRequest, error) {
+  ACTIVE_RUNS.delete(runRequest.job.jobId);
+  const failedAt = new Date().toISOString();
+  const message = `Dispatcher runner crashed: ${error.message}`;
+  const runResult = {
+    events: [
+      {
+        type: "dispatcher_runner_error",
+        timestamp: failedAt,
+        message,
+        errorMessage: error.message
+      }
+    ],
+    sessionPatch: {
+      status: "idle",
+      canContinue: Boolean(runRequest.session.providerSessionId)
+    },
+    jobPatch: {
+      status: "failed",
+      endedAt: failedAt,
+      failureReason: message,
+      resultSummary: message,
+      risks: ["Inspect the job log before re-running the agent."]
+    }
+  };
+  await persistJobRunResult({
+    job: runRequest.job,
+    session: runRequest.session,
+    selectedAgent: runRequest.selectedAgent,
+    runResult
+  });
+}
+
 async function listJobs(args) {
   const registry = await readRegistry();
   const limit = args.limit ?? 50;
@@ -558,9 +662,16 @@ async function cancelJob(args) {
   const registry = await readRegistry();
   const job = registry.jobs[args.jobId];
   if (!job) return { jobId: args.jobId, status: "not_found" };
+  let activeProcessCancelled = false;
   if (!["completed", "failed", "cancelled", "timed_out"].includes(job.status)) {
+    const activeRun = ACTIVE_RUNS.get(job.jobId);
+    if (activeRun) {
+      activeProcessCancelled = true;
+      activeRun.cancel(args.reason || "Cancelled by dispatcher caller.");
+    }
     job.status = "cancelled";
     job.endedAt = new Date().toISOString();
+    job.resultSummary = args.reason || "Cancelled by dispatcher caller.";
     job.recentEvents = [
       ...(job.recentEvents ?? []),
       {
@@ -572,7 +683,7 @@ async function cancelJob(args) {
     await writeRegistry(registry);
     await appendJsonl(job.logPath, job.recentEvents.slice(-1).map((event) => ({ ...event, jobId: job.jobId, sessionId: job.sessionId, agentId: job.agentId })));
   }
-  return { jobId: job.jobId, status: job.status };
+  return { jobId: job.jobId, status: job.status, activeProcessCancelled };
 }
 
 async function listSessions(args) {
@@ -863,7 +974,7 @@ function findActiveWorktreeJob(registry, worktree, permissionProfile) {
   )) ?? null;
 }
 
-function planLaunch({ launchingEnabled, selectedAgent, async }) {
+function planLaunch({ launchingEnabled, selectedAgent }) {
   if (!launchingEnabled) {
     return {
       kind: "record_only",
@@ -872,16 +983,6 @@ function planLaunch({ launchingEnabled, selectedAgent, async }) {
       adapterStatus: "record_only",
       summary: "Recorded dispatcher job, selected agent, session binding, and current worktree state without launching an external process.",
       risks: ["No external agent process was launched in this alpha build."]
-    };
-  }
-  if (async !== false) {
-    return {
-      kind: "unsupported",
-      runnable: false,
-      status: "failed",
-      adapterStatus: "async_not_implemented",
-      summary: "External launch currently requires async=false.",
-      risks: ["External launch was requested, but async job execution is not implemented yet."]
     };
   }
   if (selectedAgent.id === "opencode") {
@@ -913,7 +1014,7 @@ function planLaunch({ launchingEnabled, selectedAgent, async }) {
   };
 }
 
-async function runOpenCodeAcpJob({ args, job, session, selectedAgent, timeoutSec, agentEnv }) {
+async function runOpenCodeAcpJob({ args, job, session, selectedAgent, timeoutSec, agentEnv, controller }) {
   const events = [];
   const startedAt = Date.now();
   let providerSessionId = session.providerSessionId ?? null;
@@ -927,6 +1028,9 @@ async function runOpenCodeAcpJob({ args, job, session, selectedAgent, timeoutSec
     env: agentEnv,
     onEvent: (event) => events.push(event)
   });
+  if (controller) {
+    controller.cancelProcess = () => client.dispose();
+  }
 
   try {
     await client.start();
@@ -1037,12 +1141,15 @@ async function runOpenCodeAcpJob({ args, job, session, selectedAgent, timeoutSec
       : await collectWorktreeState(args.worktree);
     const collectedEvents = [...events, ...client.drainLogEvents()];
     const agentErrors = extractAgentErrors(collectedEvents);
-    const failureReason = buildFailureReason("OpenCode ACP", error, agentErrors);
+    const cancelled = controller?.cancelRequested === true;
+    const failureReason = cancelled
+      ? (controller.cancelReason || "OpenCode ACP cancelled by dispatcher caller.")
+      : buildFailureReason("OpenCode ACP", error, agentErrors);
     return {
       events: [
         ...collectedEvents,
         {
-          type: "acp_error",
+          type: cancelled ? "acp_cancelled" : "acp_error",
           timestamp: failedAt,
           message: failureReason,
           errorMessage: error.message,
@@ -1058,7 +1165,7 @@ async function runOpenCodeAcpJob({ args, job, session, selectedAgent, timeoutSec
         canContinue: Boolean(providerSessionId)
       },
       jobPatch: {
-        status: error.code === "timeout" ? "timed_out" : "failed",
+        status: cancelled ? "cancelled" : error.code === "timeout" ? "timed_out" : "failed",
         endedAt: failedAt,
         adapterStatus: "opencode_acp",
         providerSessionId,
@@ -1073,7 +1180,7 @@ async function runOpenCodeAcpJob({ args, job, session, selectedAgent, timeoutSec
         },
         resultSummary: failureReason,
         validation: [],
-        risks: ["Inspect the job log before re-running the agent."]
+        risks: cancelled ? [] : ["Inspect the job log before re-running the agent."]
       }
     };
   } finally {
@@ -1081,7 +1188,7 @@ async function runOpenCodeAcpJob({ args, job, session, selectedAgent, timeoutSec
   }
 }
 
-async function runCliFallbackJob({ args, job, session, selectedAgent, timeoutSec, agentEnv }) {
+async function runCliFallbackJob({ args, job, session, selectedAgent, timeoutSec, agentEnv, controller }) {
   const spec = getCliAdapterSpec(selectedAgent.id);
   if (!spec) throw new Error(`No CLI adapter is registered for ${selectedAgent.id}.`);
   const startedAt = Date.now();
@@ -1105,7 +1212,8 @@ async function runCliFallbackJob({ args, job, session, selectedAgent, timeoutSec
     args: commandArgs,
     cwd: args.worktree,
     timeoutMs: timeoutSec * 1000,
-    env: agentEnv
+    env: agentEnv,
+    controller
   });
   const endedAt = new Date().toISOString();
   const stdoutEvents = parseCliStream(result.stdout, "stdout");
@@ -1150,6 +1258,42 @@ async function runCliFallbackJob({ args, job, session, selectedAgent, timeoutSec
         resultSummary: agentText || `${spec.label} CLI completed.`,
         validation: [],
         risks: agentErrors.length > 0 ? ["Agent reported warnings; inspect the job log if results look incomplete."] : []
+      }
+    };
+  }
+
+  if (result.cancelled) {
+    const cancelReason = controller?.cancelReason || `${spec.label} CLI cancelled by dispatcher caller.`;
+    return {
+      events: [
+        ...events,
+        {
+          type: "cli_cancelled",
+          timestamp: endedAt,
+          message: cancelReason
+        }
+      ],
+      sessionPatch: {
+        providerSessionId: nextProviderSessionId,
+        status: "idle",
+        canContinue: Boolean(nextProviderSessionId)
+      },
+      jobPatch: {
+        status: "cancelled",
+        endedAt,
+        adapterStatus: spec.adapterStatus,
+        providerSessionId: nextProviderSessionId,
+        stopReason,
+        failureReason: null,
+        agentErrors: [],
+        changedFiles,
+        worktreeState: {
+          before: job.worktreeState,
+          after: afterState
+        },
+        resultSummary: cancelReason,
+        validation: [],
+        risks: []
       }
     };
   }
@@ -1269,7 +1413,7 @@ function mapCodexSandbox(permissionProfile) {
   return "workspace-write";
 }
 
-function runCliProcess({ command, args, cwd, timeoutMs, env }) {
+function runCliProcess({ command, args, cwd, timeoutMs, env, controller }) {
   return new Promise((resolve) => {
     const child = spawn(command, args, {
       cwd,
@@ -1281,6 +1425,12 @@ function runCliProcess({ command, args, cwd, timeoutMs, env }) {
     let timedOut = false;
     let processError = null;
     let settled = false;
+    if (controller) {
+      controller.cancelProcess = () => {
+        if (!settled && !child.killed) child.kill("SIGTERM");
+      };
+      if (controller.cancelRequested) controller.cancelProcess();
+    }
     const timer = setTimeout(() => {
       timedOut = true;
       child.kill("SIGTERM");
@@ -1301,7 +1451,7 @@ function runCliProcess({ command, args, cwd, timeoutMs, env }) {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      resolve({ stdout, stderr, exitCode, signal, timedOut, error: processError });
+      resolve({ stdout, stderr, exitCode, signal, timedOut, cancelled: controller?.cancelRequested === true, error: processError });
     });
   });
 }

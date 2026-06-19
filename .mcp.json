@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "acp-coding-agent-dispatcher": {
+      "command": "node",
+      "args": [
+        "./mcp/server.mjs"
+      ]
+    }
+  }
+}

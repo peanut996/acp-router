@@ -8,7 +8,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 
 const SERVER_NAME = "acp-coding-agent-dispatcher";
-const SERVER_VERSION = "0.4.0";
+const SERVER_VERSION = "0.4.1";
 const DATA_DIR = process.env.AGENT_DISPATCHER_DATA_DIR
   ? path.resolve(process.env.AGENT_DISPATCHER_DATA_DIR)
   : path.join(os.homedir(), ".codex", "agent-dispatcher");
@@ -1056,8 +1056,11 @@ async function runCliFallbackJob({ args, job, session, selectedAgent, timeoutSec
     : await collectWorktreeState(args.worktree);
   const changedFiles = diffChangedFiles(job.worktreeState, afterState);
   const nextProviderSessionId = providerSessionId ?? findCliSessionId(events);
+  const stopReason = findCliStopReason(events);
+  const agentErrors = extractAgentErrors(events);
+  const semanticFailure = stopReason && !["end_turn", "completed", "complete", "finished", "success"].includes(stopReason.toLowerCase());
 
-  if (result.exitCode === 0 && !result.timedOut && !result.error) {
+  if (result.exitCode === 0 && !result.timedOut && !result.error && !semanticFailure) {
     const agentText = extractCliText(events);
     return {
       events,
@@ -1071,9 +1074,9 @@ async function runCliFallbackJob({ args, job, session, selectedAgent, timeoutSec
         endedAt,
         adapterStatus: spec.adapterStatus,
         providerSessionId: nextProviderSessionId,
-        stopReason: null,
+        stopReason,
         failureReason: null,
-        agentErrors: [],
+        agentErrors,
         changedFiles,
         worktreeState: {
           before: job.worktreeState,
@@ -1081,16 +1084,17 @@ async function runCliFallbackJob({ args, job, session, selectedAgent, timeoutSec
         },
         resultSummary: agentText || `${spec.label} CLI completed.`,
         validation: [],
-        risks: []
+        risks: agentErrors.length > 0 ? ["Agent reported warnings; inspect the job log if results look incomplete."] : []
       }
     };
   }
 
   const failure = result.error ?? new Error(result.timedOut
     ? `${spec.label} CLI timed out after ${timeoutSec}s.`
-    : `${spec.label} CLI exited with code ${result.exitCode}.`);
+    : semanticFailure
+      ? `${spec.label} CLI stopped before completing: ${stopReason}.`
+      : `${spec.label} CLI exited with code ${result.exitCode}.`);
   if (result.timedOut) failure.code = "timeout";
-  const agentErrors = extractAgentErrors(events);
   const failureReason = buildFailureReason(`${spec.label} CLI`, failure, agentErrors);
   return {
     events: [
@@ -1113,6 +1117,7 @@ async function runCliFallbackJob({ args, job, session, selectedAgent, timeoutSec
       endedAt,
       adapterStatus: spec.adapterStatus,
       providerSessionId: nextProviderSessionId,
+      stopReason,
       failureReason,
       agentErrors,
       changedFiles,
@@ -1151,6 +1156,7 @@ function getCliAdapterSpec(agentId) {
         "-p",
         "--output-format",
         "stream-json",
+        "--verbose",
         "--permission-mode",
         mapAgentPermissionMode(permissionProfile),
         ...(providerSessionId ? ["--resume", providerSessionId] : []),
@@ -1601,6 +1607,14 @@ function findCliSessionId(events) {
   return null;
 }
 
+function findCliStopReason(events) {
+  for (const event of events) {
+    const value = findStopReasonInValue(event.payload);
+    if (value) return value;
+  }
+  return null;
+}
+
 function findSessionIdInValue(value, depth = 0) {
   if (depth > 6 || value == null) return null;
   if (Array.isArray(value)) {
@@ -1619,6 +1633,26 @@ function findSessionIdInValue(value, depth = 0) {
       return child;
     }
     const found = findSessionIdInValue(child, depth + 1);
+    if (found) return found;
+  }
+  return null;
+}
+
+function findStopReasonInValue(value, depth = 0) {
+  if (depth > 6 || value == null) return null;
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const found = findStopReasonInValue(item, depth + 1);
+      if (found) return found;
+    }
+    return null;
+  }
+  if (typeof value !== "object") return null;
+  for (const [key, child] of Object.entries(value)) {
+    if (typeof child === "string" && /^(stopReason|stop_reason|finishReason|finish_reason)$/i.test(key)) {
+      return child;
+    }
+    const found = findStopReasonInValue(child, depth + 1);
     if (found) return found;
   }
   return null;
@@ -1746,8 +1780,12 @@ function createId(prefix) {
 }
 
 function preview(value, maxLength) {
-  const text = String(value ?? "").replace(/\s+/g, " ").trim();
+  const text = stripAnsi(String(value ?? "")).replace(/\s+/g, " ").trim();
   return text.length > maxLength ? `${text.slice(0, maxLength - 1)}...` : text;
+}
+
+function stripAnsi(value) {
+  return value.replace(/\u001B\[[0-?]*[ -/]*[@-~]/g, "");
 }
 
 async function hashText(text) {

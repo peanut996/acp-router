@@ -11,6 +11,7 @@ const execFileAsync = promisify(execFile);
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const VALID_AGENTS = new Set(["opencode", "claude", "cursor-agent", "codex"]);
 
+async function main() {
 const options = parseArgs(process.argv.slice(2));
 if (options.help) {
   printHelp();
@@ -51,19 +52,25 @@ try {
     includeNotInstalled: false
   });
   const prompt = options.prompt ?? buildDefaultPrompt(expectedLine);
-  const runResult = await client.callTool("run_coding_agent", {
-    agent: options.agent,
-    worktree,
-    prompt,
-    async: false,
-    timeoutSec: options.timeoutSec,
-    permissionProfile: options.permissionProfile,
-    collectDiff: true,
-    metadata: {
-      source: "scripts/e2e-dispatcher.mjs",
-      expectedLine
+  const runOutcome = await waitForRunOutcome({
+    client,
+    dispatcherDataDir,
+    timeoutMs: Math.max(options.timeoutSec * 1000 + 60_000, 120_000),
+    args: {
+      agent: options.agent,
+      worktree,
+      prompt,
+      async: false,
+      timeoutSec: options.timeoutSec,
+      permissionProfile: options.permissionProfile,
+      collectDiff: true,
+      metadata: {
+        source: "scripts/e2e-dispatcher.mjs",
+        expectedLine
+      }
     }
-  }, Math.max(options.timeoutSec * 1000 + 60_000, 120_000));
+  });
+  const runResult = runOutcome.result;
   await client.callTool("configure_coding_agent_dispatcher", {
     launchExternalAgents: false
   });
@@ -105,7 +112,9 @@ try {
       agentErrors: runResult.agentErrors,
       availableModels: runResult.availableModels,
       logPath: runResult.logPath,
-      risks: runResult.risks
+      risks: runResult.risks,
+      source: runOutcome.source,
+      responseError: runOutcome.error?.message ?? null
     },
     expectedLine,
     note,
@@ -134,6 +143,7 @@ try {
     await rm(tempRoot, { force: true, recursive: true });
   }
   process.exitCode = exitCode;
+}
 }
 
 function parseArgs(argv) {
@@ -171,6 +181,80 @@ function readValue(argv, index, name) {
   const value = argv[index];
   if (!value || value.startsWith("--")) throw new Error(`${name} requires a value.`);
   return value;
+}
+
+async function waitForRunOutcome({ client, dispatcherDataDir, args, timeoutMs }) {
+  const pollState = { done: false };
+  const mcpPromise = client
+    .callTool("run_coding_agent", args, timeoutMs)
+    .then((result) => ({ source: "mcp_response", result }))
+    .catch((error) => ({ source: "mcp_error", error }));
+  const registryPromise = waitForLatestTerminalJob({ dispatcherDataDir, timeoutMs, pollState })
+    .then((result) => ({ source: "dispatcher_registry", result }))
+    .catch((error) => ({ source: "registry_error", error }));
+
+  const first = await Promise.race([mcpPromise, registryPromise]);
+  if (first.source === "mcp_error") {
+    const fallback = await registryPromise;
+    pollState.done = true;
+    if (fallback.source === "dispatcher_registry") {
+      return { ...fallback, error: first.error };
+    }
+    throw first.error;
+  }
+  pollState.done = true;
+  if (first.source === "registry_error") throw first.error;
+  return first;
+}
+
+async function waitForLatestTerminalJob({ dispatcherDataDir, timeoutMs, pollState }) {
+  const startedAt = Date.now();
+  let lastJob = null;
+  while (!pollState.done && Date.now() - startedAt < timeoutMs) {
+    const job = await readLatestJob(dispatcherDataDir);
+    if (job) {
+      lastJob = job;
+      if (["completed", "failed", "cancelled", "timed_out", "orphaned"].includes(job.status)) {
+        return mapJobToRunResult(job);
+      }
+    }
+    await sleep(1000);
+  }
+  throw new Error(`No terminal dispatcher job found before timeout. Last status: ${lastJob?.status ?? "none"}`);
+}
+
+async function readLatestJob(dispatcherDataDir) {
+  try {
+    const registry = JSON.parse(await readFile(path.join(dispatcherDataDir, "registry.json"), "utf8"));
+    return Object.values(registry.jobs ?? {})
+      .sort((a, b) => String(b.startedAt).localeCompare(String(a.startedAt)))[0] ?? null;
+  } catch (error) {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  }
+}
+
+function mapJobToRunResult(job) {
+  return {
+    jobId: job.jobId,
+    sessionId: job.sessionId,
+    agentId: job.agentId,
+    status: job.status,
+    worktree: job.worktree,
+    endedAt: job.endedAt,
+    summary: job.resultSummary,
+    changedFiles: job.changedFiles ?? [],
+    validation: job.validation ?? [],
+    risks: job.risks ?? [],
+    logPath: job.logPath,
+    worktreeState: job.worktreeState,
+    adapterStatus: job.adapterStatus,
+    providerSessionId: job.providerSessionId,
+    stopReason: job.stopReason,
+    failureReason: job.failureReason ?? null,
+    agentErrors: job.agentErrors ?? [],
+    availableModels: job.availableModels ?? []
+  };
 }
 
 function printHelp() {
@@ -251,7 +335,7 @@ class McpClient {
     this.cwd = cwd;
     this.env = env;
     this.child = null;
-    this.buffer = "";
+    this.buffer = Buffer.alloc(0);
     this.stderr = "";
     this.nextId = 1;
     this.pending = new Map();
@@ -263,7 +347,6 @@ class McpClient {
       stdio: ["pipe", "pipe", "pipe"],
       env: this.env
     });
-    this.child.stdout.setEncoding("utf8");
     this.child.stderr.setEncoding("utf8");
     this.child.stdout.on("data", (chunk) => this.handleStdout(chunk));
     this.child.stderr.on("data", (chunk) => {
@@ -308,19 +391,19 @@ class McpClient {
   }
 
   handleStdout(chunk) {
-    this.buffer += chunk;
+    this.buffer = Buffer.concat([this.buffer, Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)]);
     while (true) {
       const headerEnd = this.buffer.indexOf("\r\n\r\n");
       if (headerEnd === -1) return;
-      const header = this.buffer.slice(0, headerEnd);
+      const header = this.buffer.subarray(0, headerEnd).toString("utf8");
       const match = /Content-Length:\s*(\d+)/i.exec(header);
       if (!match) throw new Error(`Invalid MCP header: ${header}`);
       const length = Number.parseInt(match[1], 10);
       const bodyStart = headerEnd + 4;
       const bodyEnd = bodyStart + length;
       if (this.buffer.length < bodyEnd) return;
-      const message = JSON.parse(this.buffer.slice(bodyStart, bodyEnd));
-      this.buffer = this.buffer.slice(bodyEnd);
+      const message = JSON.parse(this.buffer.subarray(bodyStart, bodyEnd).toString("utf8"));
+      this.buffer = this.buffer.subarray(bodyEnd);
       const pending = this.pending.get(message.id);
       if (!pending) continue;
       clearTimeout(pending.timer);
@@ -341,6 +424,10 @@ function appendLimited(current, chunk, maxLength) {
   return next.slice(-maxLength);
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function safeEnv() {
   return {
     ...process.env,
@@ -350,3 +437,5 @@ function safeEnv() {
     LC_ALL: process.env.LC_ALL ?? "C.UTF-8"
   };
 }
+
+await main();

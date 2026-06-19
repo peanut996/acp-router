@@ -29,7 +29,7 @@ try {
 
   if (
     result.stderr
-    || result.serverVersion !== "0.4.0"
+    || result.serverVersion !== "0.4.1"
     || result.discoveryCount < 1
     || result.runStatus !== "completed"
     || result.adapterStatus !== "opencode_acp"

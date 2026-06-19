@@ -1,6 +1,6 @@
 {
   "name": "acp-coding-agent-dispatcher",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Dispatch independent coding tasks from Codex to local ACP or CLI coding agents.",
   "author": {
     "name": "Local developer"
@@ -17,13 +17,14 @@
   "interface": {
     "displayName": "ACP Coding Agent Dispatcher",
     "shortDescription": "Dispatch isolated coding tasks to local coding agents.",
-    "longDescription": "ACP Coding Agent Dispatcher helps Codex discover local coding agents, choose a safe worktree, record tracked jobs, inspect local worktree state, and continue or archive external agent sessions through a bundled MCP server. The current alpha records dispatcher metadata and keeps external process launch disabled until adapters are implemented.",
+    "longDescription": "ACP Coding Agent Dispatcher helps Codex discover local coding agents, choose a safe worktree, record tracked jobs, inspect local worktree state, and continue or archive external agent sessions through a bundled MCP server. The current alpha can run OpenCode through ACP when external launch is explicitly enabled; other agents remain discovery and registry-only.",
     "developerName": "Local developer",
     "category": "Productivity",
     "capabilities": [
       "MCP",
       "Skills",
       "Agent discovery",
+      "ACP stdio",
       "Local automation"
     ],
     "defaultPrompt": [

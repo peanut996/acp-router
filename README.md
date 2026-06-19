@@ -12,14 +12,23 @@ This repository is an alpha implementation. It can:
 - persist dispatcher config, sessions, and jobs under `~/.codex/agent-dispatcher`;
 - write per-job JSONL logs;
 - capture current git worktree state for recorded jobs.
+- run OpenCode through ACP stdio when external launch is explicitly enabled.
 
-It does not launch external coding-agent processes yet. `run_coding_agent` currently records a completed `record_only` job unless `launchExternalAgents` is enabled, in which case it returns `adapter_not_implemented`.
+External launch is disabled by default. `run_coding_agent` records a completed `record_only` job unless `launchExternalAgents` is enabled. The only runnable adapter today is OpenCode ACP, and it currently requires `async=false`.
 
 ## Validate
 
 ```bash
 npm run check
 npm run smoke
+```
+
+`npm run smoke` uses a fake local `opencode` command so it can validate the ACP adapter without model calls.
+
+To verify that the real OpenCode ACP server can initialize and create a session without sending a model prompt:
+
+```bash
+npm run smoke:opencode
 ```
 
 The plugin manifest can be validated with the Codex plugin creator helper:

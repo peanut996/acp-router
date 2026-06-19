@@ -37,4 +37,4 @@ When calling `run_coding_agent` or `continue_coding_agent_session`, include:
 - Constraints from the user and repository instructions.
 - Expected final report: changed files, tests or validation, risks, and unresolved questions.
 
-The alpha MCP server exposes safe local registry tools. It discovers installed agents, records jobs and sessions, writes JSONL job logs, and captures current git worktree state. External process launch is intentionally disabled until ACP and CLI adapters are implemented.
+The alpha MCP server exposes safe local registry tools. It discovers installed agents, records jobs and sessions, writes JSONL job logs, captures current git worktree state, and can run OpenCode through ACP when `launchExternalAgents` is explicitly enabled and `run_coding_agent` is called with `async=false`. Other external process launch paths remain disabled until their adapters are implemented.

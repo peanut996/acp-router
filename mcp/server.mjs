@@ -2,18 +2,19 @@
 
 import fs from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 
 const SERVER_NAME = "acp-coding-agent-dispatcher";
-const SERVER_VERSION = "0.1.1";
+const SERVER_VERSION = "0.2.0";
 const DATA_DIR = path.join(os.homedir(), ".codex", "agent-dispatcher");
 const REGISTRY_PATH = path.join(DATA_DIR, "registry.json");
 const CONFIG_PATH = path.join(DATA_DIR, "config.json");
 const LOG_DIR = path.join(DATA_DIR, "logs");
 const COMMAND_TIMEOUT_MS = 3000;
+const ACP_STARTUP_DELAY_MS = 300;
 const execFileAsync = promisify(execFile);
 
 const TOOL_DEFINITIONS = [
@@ -408,15 +409,30 @@ async function createJob(args) {
     ? { skipped: true, reason: "collectDiff disabled" }
     : await collectWorktreeState(args.worktree);
   const launchingEnabled = config.safety.launchExternalAgents === true;
-  const status = launchingEnabled ? "failed" : "completed";
-  const endedAt = new Date().toISOString();
-  const adapterStatus = launchingEnabled ? "adapter_not_implemented" : "record_only";
-  const resultSummary = launchingEnabled
-    ? "External launch was requested, but runtime adapters are not implemented yet."
+  const unsupportedLaunch = launchingEnabled && selectedAgent.id !== "opencode";
+  const asyncLaunch = launchingEnabled && args.async !== false;
+  const adapterStatus = launchingEnabled
+    ? unsupportedLaunch
+      ? "adapter_not_implemented"
+      : asyncLaunch
+        ? "async_not_implemented"
+        : "starting"
+    : "record_only";
+  const initialStatus = launchingEnabled
+    ? unsupportedLaunch || asyncLaunch ? "failed" : "running"
+    : "completed";
+  const initialSummary = launchingEnabled
+    ? unsupportedLaunch
+      ? `External launch is not implemented for ${selectedAgent.id}.`
+      : asyncLaunch
+        ? "External launch currently requires async=false."
+        : "Starting OpenCode ACP adapter."
     : "Recorded dispatcher job, selected agent, session binding, and current worktree state without launching an external process.";
-  const risks = launchingEnabled
-    ? ["External launch adapters are not implemented yet."]
-    : ["No external agent process was launched in this alpha build."];
+  const initialRisks = launchingEnabled && !unsupportedLaunch && !asyncLaunch
+    ? []
+    : launchingEnabled
+      ? ["External launch was requested, but no runnable adapter path was selected."]
+      : ["No external agent process was launched in this alpha build."];
   const recentEvents = [
     {
       type: "job_created",
@@ -425,8 +441,8 @@ async function createJob(args) {
     },
     {
       type: adapterStatus,
-      timestamp: endedAt,
-      message: resultSummary
+      timestamp: now,
+      message: initialSummary
     }
   ];
   const session = registry.sessions[sessionId] ?? {
@@ -447,7 +463,7 @@ async function createJob(args) {
     jobId,
     sessionId,
     agentId: selected.agentId,
-    status,
+    status: initialStatus,
     worktree: args.worktree,
     mode,
     permissionProfile,
@@ -455,13 +471,13 @@ async function createJob(args) {
     promptPreview: preview(args.prompt, 160),
     promptHash: await hashText(args.prompt),
     startedAt: now,
-    endedAt,
+    endedAt: initialStatus === "running" ? null : now,
     timeoutSec: args.timeoutSec ?? 3600,
     metadata: isPlainObject(args.metadata) ? args.metadata : {},
-    resultSummary,
+    resultSummary: initialSummary,
     changedFiles: [],
     validation: [],
-    risks,
+    risks: initialRisks,
     logPath,
     adapterStatus,
     selectionReason: selected.reason,
@@ -476,6 +492,25 @@ async function createJob(args) {
   await writeRegistry(registry);
   await appendJsonl(logPath, recentEvents.map((event) => ({ ...event, jobId, sessionId, agentId: selected.agentId })));
 
+  if (launchingEnabled && !unsupportedLaunch && !asyncLaunch) {
+    const runResult = await runOpenCodeAcpJob({
+      args,
+      job,
+      session,
+      selectedAgent,
+      timeoutSec: args.timeoutSec ?? 3600
+    });
+    Object.assign(job, runResult.jobPatch);
+    Object.assign(session, runResult.sessionPatch);
+    job.recentEvents = [...job.recentEvents, ...runResult.events];
+    session.updatedAt = job.endedAt;
+    session.lastJobId = jobId;
+    registry.sessions[sessionId] = session;
+    registry.jobs[jobId] = job;
+    await writeRegistry(registry);
+    await appendJsonl(logPath, runResult.events.map((event) => ({ ...event, jobId, sessionId, agentId: selected.agentId })));
+  }
+
   return {
     jobId,
     sessionId,
@@ -483,14 +518,16 @@ async function createJob(args) {
     status: job.status,
     worktree: args.worktree,
     startedAt: now,
-    endedAt,
-    summary: resultSummary,
-    changedFiles: [],
-    validation: [],
-    risks,
+    endedAt: job.endedAt,
+    summary: job.resultSummary,
+    changedFiles: job.changedFiles,
+    validation: job.validation,
+    risks: job.risks,
     logPath,
-    worktreeState,
-    adapterStatus,
+    worktreeState: job.worktreeState,
+    adapterStatus: job.adapterStatus,
+    providerSessionId: session.providerSessionId,
+    stopReason: job.stopReason,
     selectionReason: selected.reason,
     message: `${selected.agentId} job recorded by dispatcher alpha. Use get_coding_agent_job to inspect it.`
   };
@@ -680,6 +717,7 @@ async function probeAgent(agent, config, pathEntries) {
     displayName: agent.displayName,
     status: disabled ? "disabled" : installedPath ? "available" : "not_installed",
     version: versionProbe.version,
+    installedPath,
     transport: agent.transport,
     command: agent.command,
     source: agent.source,
@@ -765,6 +803,386 @@ function findActiveWorktreeJob(registry, worktree, permissionProfile) {
     && job.permissionProfile !== "plan"
     && ["queued", "starting", "running"].includes(job.status)
   )) ?? null;
+}
+
+async function runOpenCodeAcpJob({ args, job, session, selectedAgent, timeoutSec }) {
+  const events = [];
+  const startedAt = Date.now();
+  const client = new AcpStdioClient({
+    command: selectedAgent.installedPath ?? selectedAgent.executable ?? "opencode",
+    args: ["acp", "--cwd", args.worktree, "--print-logs", "--log-level", "ERROR"],
+    cwd: args.worktree,
+    timeoutMs: timeoutSec * 1000,
+    onEvent: (event) => events.push(event)
+  });
+
+  try {
+    await client.start();
+    const initialize = await client.request("initialize", {
+      protocolVersion: 1,
+      clientCapabilities: {},
+      clientInfo: {
+        name: SERVER_NAME,
+        title: "ACP Coding Agent Dispatcher",
+        version: SERVER_VERSION
+      }
+    });
+    events.push({
+      type: "acp_initialize",
+      timestamp: new Date().toISOString(),
+      message: "OpenCode ACP initialized.",
+      result: summarizeInitializeResult(initialize)
+    });
+
+    const sessionResult = session.providerSessionId
+      ? await client.request("session/resume", {
+        sessionId: session.providerSessionId,
+        cwd: args.worktree,
+        mcpServers: []
+      })
+      : await client.request("session/new", {
+        cwd: args.worktree,
+        mcpServers: []
+      });
+    const providerSessionId = session.providerSessionId ?? sessionResult.sessionId;
+    events.push({
+      type: session.providerSessionId ? "acp_session_resumed" : "acp_session_created",
+      timestamp: new Date().toISOString(),
+      message: `OpenCode ACP session ready: ${providerSessionId}`,
+      providerSessionId
+    });
+
+    const promptResult = await client.request("session/prompt", {
+      sessionId: providerSessionId,
+      prompt: [
+        {
+          type: "text",
+          text: buildDispatchPrompt(args.prompt)
+        }
+      ]
+    });
+    const completedAt = new Date().toISOString();
+    const afterState = args.collectDiff === false
+      ? { skipped: true, reason: "collectDiff disabled" }
+      : await collectWorktreeState(args.worktree);
+    const changedFiles = diffChangedFiles(job.worktreeState, afterState);
+    const agentText = extractAgentText(events);
+    const stopReason = promptResult.stopReason ?? null;
+    return {
+      events: [
+        ...events,
+        ...client.drainLogEvents(),
+        {
+          type: "acp_prompt_completed",
+          timestamp: completedAt,
+          message: `OpenCode ACP prompt completed with stopReason=${stopReason ?? "unknown"}.`,
+          stopReason
+        },
+        buildAcpProcessClosedEvent(startedAt)
+      ],
+      sessionPatch: {
+        providerSessionId,
+        status: "idle",
+        canContinue: true
+      },
+      jobPatch: {
+        status: "completed",
+        endedAt: completedAt,
+        adapterStatus: "opencode_acp",
+        providerSessionId,
+        stopReason,
+        changedFiles,
+        worktreeState: {
+          before: job.worktreeState,
+          after: afterState
+        },
+        resultSummary: agentText || `OpenCode ACP completed with stopReason=${stopReason ?? "unknown"}.`,
+        validation: [],
+        risks: stopReason && stopReason !== "end_turn" ? [`OpenCode stopped with ${stopReason}.`] : []
+      }
+    };
+  } catch (error) {
+    const failedAt = new Date().toISOString();
+    const afterState = args.collectDiff === false
+      ? { skipped: true, reason: "collectDiff disabled" }
+      : await collectWorktreeState(args.worktree);
+    return {
+      events: [
+        ...events,
+        ...client.drainLogEvents(),
+        {
+          type: "acp_error",
+          timestamp: failedAt,
+          message: error.message
+        },
+        buildAcpProcessClosedEvent(startedAt)
+      ],
+      sessionPatch: {
+        status: "idle"
+      },
+      jobPatch: {
+        status: error.code === "timeout" ? "timed_out" : "failed",
+        endedAt: failedAt,
+        adapterStatus: "opencode_acp",
+        changedFiles: diffChangedFiles(job.worktreeState, afterState),
+        worktreeState: {
+          before: job.worktreeState,
+          after: afterState
+        },
+        resultSummary: `OpenCode ACP failed: ${error.message}`,
+        validation: [],
+        risks: ["Inspect the job log before re-running the agent."]
+      }
+    };
+  } finally {
+    client.dispose();
+  }
+}
+
+class AcpStdioClient {
+  constructor({ command, args, cwd, timeoutMs, onEvent }) {
+    this.command = command;
+    this.args = args;
+    this.cwd = cwd;
+    this.timeoutMs = timeoutMs;
+    this.onEvent = onEvent;
+    this.nextId = 1;
+    this.pending = new Map();
+    this.stdoutBuffer = "";
+    this.logEvents = [];
+    this.child = null;
+    this.startError = null;
+  }
+
+  async start() {
+    this.child = spawn(this.command, this.args, {
+      cwd: this.cwd,
+      stdio: ["pipe", "pipe", "pipe"],
+      env: safeEnv()
+    });
+    this.child.stdout.setEncoding("utf8");
+    this.child.stderr.setEncoding("utf8");
+    this.child.stdout.on("data", (chunk) => this.handleStdout(chunk));
+    this.child.stderr.on("data", (chunk) => this.handleStderr(chunk));
+    this.child.on("error", (error) => {
+      this.startError = error;
+      this.rejectPending(error);
+    });
+    this.child.on("exit", (code, signal) => this.rejectPending(new Error(`ACP process exited with code=${code} signal=${signal}`)));
+    await sleep(ACP_STARTUP_DELAY_MS);
+    if (this.startError) throw this.startError;
+  }
+
+  request(method, params) {
+    const id = this.nextId++;
+    const payload = { jsonrpc: "2.0", id, method, params };
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        const error = new Error(`ACP request timed out: ${method}`);
+        error.code = "timeout";
+        reject(error);
+      }, this.timeoutMs);
+      this.pending.set(id, { method, resolve, reject, timer });
+      this.write(payload);
+    });
+  }
+
+  respond(id, result) {
+    this.write({ jsonrpc: "2.0", id, result });
+  }
+
+  respondError(id, code, message) {
+    this.write({ jsonrpc: "2.0", id, error: { code, message } });
+  }
+
+  write(payload) {
+    if (!this.child || !this.child.stdin.writable) {
+      throw new Error("ACP process is not writable.");
+    }
+    this.child.stdin.write(`${JSON.stringify(payload)}\n`);
+  }
+
+  handleStdout(chunk) {
+    this.stdoutBuffer += chunk;
+    while (true) {
+      const newlineIndex = this.stdoutBuffer.indexOf("\n");
+      if (newlineIndex === -1) return;
+      const line = this.stdoutBuffer.slice(0, newlineIndex).trim();
+      this.stdoutBuffer = this.stdoutBuffer.slice(newlineIndex + 1);
+      if (!line) continue;
+      this.handleMessageLine(line);
+    }
+  }
+
+  handleMessageLine(line) {
+    let message;
+    try {
+      message = JSON.parse(line);
+    } catch {
+      this.logEvents.push({
+        type: "acp_stdout_parse_error",
+        timestamp: new Date().toISOString(),
+        message: preview(line, 300)
+      });
+      return;
+    }
+    if (Object.prototype.hasOwnProperty.call(message, "id") && (message.result || message.error)) {
+      const pending = this.pending.get(message.id);
+      if (!pending) return;
+      clearTimeout(pending.timer);
+      this.pending.delete(message.id);
+      if (message.error) {
+        pending.reject(new Error(`${pending.method} failed: ${message.error.message ?? JSON.stringify(message.error)}`));
+      } else {
+        pending.resolve(message.result);
+      }
+      return;
+    }
+    if (message.method && Object.prototype.hasOwnProperty.call(message, "id")) {
+      this.handleClientRequest(message);
+      return;
+    }
+    if (message.method) {
+      this.handleNotification(message);
+    }
+  }
+
+  handleClientRequest(message) {
+    if (message.method === "session/request_permission") {
+      this.logEvents.push({
+        type: "acp_permission_cancelled",
+        timestamp: new Date().toISOString(),
+        message: "Dispatcher cancelled an ACP permission request.",
+        params: message.params
+      });
+      this.respond(message.id, { outcome: "cancelled" });
+      return;
+    }
+    this.respondError(message.id, -32601, `Unsupported client method: ${message.method}`);
+  }
+
+  handleNotification(message) {
+    const event = normalizeAcpNotification(message);
+    this.onEvent(event);
+  }
+
+  handleStderr(chunk) {
+    for (const line of chunk.split(/\r?\n/).filter(Boolean)) {
+      this.logEvents.push({
+        type: "acp_stderr",
+        timestamp: new Date().toISOString(),
+        message: preview(line, 500)
+      });
+    }
+  }
+
+  drainLogEvents() {
+    const events = this.logEvents;
+    this.logEvents = [];
+    return events;
+  }
+
+  rejectPending(error) {
+    for (const pending of this.pending.values()) {
+      clearTimeout(pending.timer);
+      pending.reject(error);
+    }
+    this.pending.clear();
+  }
+
+  dispose() {
+    for (const pending of this.pending.values()) clearTimeout(pending.timer);
+    this.pending.clear();
+    if (this.child && !this.child.killed) {
+      this.child.kill("SIGTERM");
+    }
+  }
+}
+
+function normalizeAcpNotification(message) {
+  if (message.method === "session/update") {
+    const update = message.params?.update ?? {};
+    const event = {
+      type: `acp_${update.sessionUpdate ?? "session_update"}`,
+      timestamp: new Date().toISOString(),
+      message: describeSessionUpdate(update),
+      params: message.params
+    };
+    return event;
+  }
+  return {
+    type: `acp_${message.method.replaceAll("/", "_")}`,
+    timestamp: new Date().toISOString(),
+    message: message.method,
+    params: message.params
+  };
+}
+
+function describeSessionUpdate(update) {
+  if (update.sessionUpdate === "agent_message_chunk") {
+    return preview(update.content?.text ?? "", 300);
+  }
+  if (update.sessionUpdate === "tool_call" || update.sessionUpdate === "tool_call_update") {
+    return preview(update.title ?? update.status ?? update.toolCallId ?? "tool call update", 300);
+  }
+  if (update.sessionUpdate === "plan") {
+    return "Agent plan update.";
+  }
+  if (update.sessionUpdate === "available_commands_update") {
+    return `Available commands updated: ${(update.availableCommands ?? []).length}`;
+  }
+  return update.sessionUpdate ?? "session update";
+}
+
+function summarizeInitializeResult(result) {
+  return {
+    protocolVersion: result.protocolVersion,
+    agentInfo: result.agentInfo ?? null,
+    agentCapabilities: {
+      loadSession: Boolean(result.agentCapabilities?.loadSession),
+      sessionCapabilities: Object.keys(result.agentCapabilities?.sessionCapabilities ?? {})
+    },
+    authMethods: (result.authMethods ?? []).map((method) => ({ id: method.id, name: method.name }))
+  };
+}
+
+function buildDispatchPrompt(prompt) {
+  return [
+    prompt,
+    "",
+    "When you finish, report:",
+    "- changed files",
+    "- validation commands and results",
+    "- risks or incomplete work"
+  ].join("\n");
+}
+
+function extractAgentText(events) {
+  const chunks = events
+    .filter((event) => event.type === "acp_agent_message_chunk")
+    .map((event) => event.params?.update?.content?.text)
+    .filter(Boolean);
+  return chunks.join("").trim();
+}
+
+function diffChangedFiles(beforeState, afterState) {
+  const before = new Set(Array.isArray(beforeState?.preExistingChangedFiles) ? beforeState.preExistingChangedFiles : []);
+  const after = Array.isArray(afterState?.preExistingChangedFiles) ? afterState.preExistingChangedFiles : [];
+  const introduced = after.filter((file) => !before.has(file));
+  return introduced.length > 0 ? introduced : after;
+}
+
+function buildAcpProcessClosedEvent(startedAt) {
+  return {
+    type: "acp_process_closed",
+    timestamp: new Date().toISOString(),
+    message: `OpenCode ACP adapter finished after ${Date.now() - startedAt}ms.`
+  };
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function safeEnv() {

@@ -1,13 +1,14 @@
 {
   "name": "acp-coding-agent-dispatcher",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
-  "description": "Local Codex plugin for discovering coding agents and recording dispatcher jobs.",
+  "description": "Local Codex plugin for discovering coding agents and dispatching OpenCode over ACP.",
   "scripts": {
     "start:mcp": "node ./mcp/server.mjs",
     "check": "node --check ./mcp/server.mjs",
-    "smoke": "node ./scripts/smoke.mjs"
+    "smoke": "node ./scripts/smoke.mjs",
+    "smoke:opencode": "node ./scripts/opencode-acp-handshake.mjs"
   },
   "engines": {
     "node": ">=18"

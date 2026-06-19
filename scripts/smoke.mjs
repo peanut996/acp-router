@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
@@ -12,28 +12,75 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."
 const tempRoot = await mkdtemp(path.join(os.tmpdir(), "acp-dispatcher-smoke-"));
 const tempHome = path.join(tempRoot, "home");
 const tempWorktree = path.join(tempRoot, "worktree");
+const tempBin = path.join(tempRoot, "bin");
 
 try {
   await mkdir(tempHome, { recursive: true });
   await mkdir(tempWorktree, { recursive: true });
+  await mkdir(tempBin, { recursive: true });
   await execFileAsync("git", ["-C", tempWorktree, "init", "-b", "master"]);
+  await createFakeOpenCode(tempBin);
 
-  const result = await runMcpSmoke(tempHome, tempWorktree);
+  const result = await runMcpSmoke(tempHome, tempWorktree, tempBin);
   console.log(JSON.stringify(result, null, 2));
 
-  if (result.stderr || result.serverVersion !== "0.1.1" || result.discoveryCount < 1 || result.runStatus !== "completed") {
+  if (
+    result.stderr
+    || result.serverVersion !== "0.2.0"
+    || result.discoveryCount < 1
+    || result.runStatus !== "completed"
+    || result.adapterStatus !== "opencode_acp"
+    || result.providerSessionId !== "fake-opencode-session"
+  ) {
     process.exitCode = 1;
   }
 } finally {
   await rm(tempRoot, { force: true, recursive: true });
 }
 
-async function runMcpSmoke(home, worktree) {
+async function createFakeOpenCode(binDir) {
+  const scriptPath = path.join(binDir, "opencode");
+  const script = `#!/usr/bin/env node
+if (process.argv.includes("--version")) {
+  console.log("fake-opencode 0.0.0");
+  process.exit(0);
+}
+process.stdin.setEncoding("utf8");
+let buffer = "";
+process.stdin.on("data", (chunk) => {
+  buffer += chunk;
+  while (buffer.includes("\\n")) {
+    const index = buffer.indexOf("\\n");
+    const line = buffer.slice(0, index).trim();
+    buffer = buffer.slice(index + 1);
+    if (!line) continue;
+    const message = JSON.parse(line);
+    if (message.method === "initialize") {
+      write({ jsonrpc: "2.0", id: message.id, result: { protocolVersion: 1, agentCapabilities: { loadSession: true, sessionCapabilities: { resume: {}, list: {} } }, agentInfo: { name: "Fake OpenCode", version: "0.0.0" }, authMethods: [] } });
+    } else if (message.method === "session/new" || message.method === "session/resume") {
+      write({ jsonrpc: "2.0", id: message.id, result: { sessionId: "fake-opencode-session" } });
+    } else if (message.method === "session/prompt") {
+      write({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "fake-opencode-session", update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Fake OpenCode completed." } } } });
+      write({ jsonrpc: "2.0", id: message.id, result: { stopReason: "end_turn" } });
+    } else {
+      write({ jsonrpc: "2.0", id: message.id, error: { code: -32601, message: "Unsupported fake method" } });
+    }
+  }
+});
+function write(message) {
+  process.stdout.write(JSON.stringify(message) + "\\n");
+}
+`;
+  await writeFile(scriptPath, script, "utf8");
+  await chmod(scriptPath, 0o755);
+}
+
+async function runMcpSmoke(home, worktree, binDir) {
   const { spawn } = await import("node:child_process");
   const child = spawn("node", ["./mcp/server.mjs"], {
     cwd: repoRoot,
     stdio: ["pipe", "pipe", "pipe"],
-    env: { ...process.env, HOME: home }
+    env: { ...process.env, HOME: home, PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}` }
   });
   let stdout = "";
   let stderr = "";
@@ -59,8 +106,10 @@ async function runMcpSmoke(home, worktree) {
     id: 2,
     method: "tools/call",
     params: {
-      name: "discover_coding_agents",
-      arguments: { includeNotInstalled: true }
+      name: "configure_coding_agent_dispatcher",
+      arguments: {
+        launchExternalAgents: true
+      }
     }
   });
   send(child, {
@@ -68,9 +117,18 @@ async function runMcpSmoke(home, worktree) {
     id: 3,
     method: "tools/call",
     params: {
+      name: "discover_coding_agents",
+      arguments: { includeNotInstalled: true }
+    }
+  });
+  send(child, {
+    jsonrpc: "2.0",
+    id: 4,
+    method: "tools/call",
+    params: {
       name: "run_coding_agent",
       arguments: {
-        agent: "codex",
+        agent: "opencode",
         worktree,
         prompt: "Smoke test only",
         async: false,
@@ -93,10 +151,11 @@ async function runMcpSmoke(home, worktree) {
   return {
     stderr: stderr.trim(),
     serverVersion: init?.result?.serverInfo?.version,
-    discoveryCount: parsedToolResults[2]?.agents?.length ?? 0,
-    runStatus: parsedToolResults[3]?.status,
-    adapterStatus: parsedToolResults[3]?.adapterStatus,
-    isGitRepository: parsedToolResults[3]?.worktreeState?.isGitRepository
+    discoveryCount: parsedToolResults[3]?.agents?.length ?? 0,
+    runStatus: parsedToolResults[4]?.status,
+    adapterStatus: parsedToolResults[4]?.adapterStatus,
+    providerSessionId: parsedToolResults[4]?.providerSessionId,
+    isGitRepository: parsedToolResults[4]?.worktreeState?.after?.isGitRepository
   };
 }
 

@@ -66,7 +66,7 @@ try {
 
   if (
     result.stderr
-    || result.serverVersion !== "0.7.0"
+    || result.serverVersion !== "0.7.1"
     || result.discoveryCount < 1
     || result.registryStatus !== "fetched"
     || result.codexRegistryId !== "codex-acp"

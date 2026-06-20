@@ -11,7 +11,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 
 const SERVER_NAME = "agent-router";
-const SERVER_VERSION = "0.7.0";
+const SERVER_VERSION = "0.7.1";
 const DATA_DIR = process.env.AGENT_ROUTER_DATA_DIR
   ? path.resolve(process.env.AGENT_ROUTER_DATA_DIR)
   : path.join(os.homedir(), ".agent-router");

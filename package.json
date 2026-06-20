@@ -1,6 +1,6 @@
 {
   "name": "agent-router-mcp",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "Generic MCP server for routing coding tasks to local ACP agents. Works with any MCP client (Claude Desktop, Cursor, Windsurf, Codex, etc.).",
   "license": "MIT",
   "author": {

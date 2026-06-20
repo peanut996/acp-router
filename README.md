@@ -2,7 +2,7 @@
 
 Generic MCP server for routing coding tasks to local ACP agents.
 
-[![npm version](https://img.shields.io/npm/v/agent-router.svg)](https://www.npmjs.com/package/agent-router)
+[![npm version](https://img.shields.io/npm/v/agent-router-mcp.svg)](https://www.npmjs.com/package/agent-router-mcp)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Node >=18](https://img.shields.io/badge/node-%3E%3D18-green.svg)](https://nodejs.org/)
 
@@ -13,24 +13,24 @@ Agent Router discovers locally installed coding agents that speak the [Agent Cli
 Run Agent Router directly without installing:
 
 ```bash
-npx agent-router
+npx agent-router-mcp
 ```
 
 Or install globally and run:
 
 ```bash
-npm install -g agent-router
-agent-router
+npm install -g agent-router-mcp
+agent-router-mcp
 ```
 
-Add Agent Router to any MCP client by pointing it at the `agent-router` command:
+Add Agent Router to any MCP client by pointing it at the `agent-router-mcp` command:
 
 ```json
 {
   "mcpServers": {
-    "agent-router": {
+    "agent-router-mcp": {
       "command": "npx",
-      "args": ["agent-router"]
+      "args": ["agent-router-mcp"]
     }
   }
 }
@@ -49,9 +49,9 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS)
 ```json
 {
   "mcpServers": {
-    "agent-router": {
+    "agent-router-mcp": {
       "command": "npx",
-      "args": ["agent-router"]
+      "args": ["agent-router-mcp"]
     }
   }
 }
@@ -66,9 +66,9 @@ Add to `.cursor/mcp.json` in your project root (or user-level config):
 ```json
 {
   "mcpServers": {
-    "agent-router": {
+    "agent-router-mcp": {
       "command": "npx",
-      "args": ["agent-router"]
+      "args": ["agent-router-mcp"]
     }
   }
 }
@@ -81,9 +81,9 @@ Add to your Windsurf MCP server configuration:
 ```json
 {
   "mcpServers": {
-    "agent-router": {
+    "agent-router-mcp": {
       "command": "npx",
-      "args": ["agent-router"]
+      "args": ["agent-router-mcp"]
     }
   }
 }
@@ -96,9 +96,9 @@ Add to `.mcp.json` in your project root:
 ```json
 {
   "mcpServers": {
-    "agent-router": {
+    "agent-router-mcp": {
       "command": "npx",
-      "args": ["agent-router"]
+      "args": ["agent-router-mcp"]
     }
   }
 }
@@ -111,10 +111,10 @@ Any client that supports stdio MCP servers can use Agent Router with the followi
 | Field | Value |
 | --- | --- |
 | Command | `npx` |
-| Args | `["agent-router"]` |
+| Args | `["agent-router-mcp"]` |
 | Transport | stdio |
 
-If you installed globally, use `"command": "agent-router"` with an empty args array instead.
+If you installed globally, use `"command": "agent-router-mcp"` with an empty args array instead.
 
 ## Tools
 
@@ -204,9 +204,9 @@ Override the data directory by setting the `AGENT_ROUTER_DATA_DIR` environment v
 ```json
 {
   "mcpServers": {
-    "agent-router": {
+    "agent-router-mcp": {
       "command": "npx",
-      "args": ["agent-router"],
+      "args": ["agent-router-mcp"],
       "env": {
         "AGENT_ROUTER_DATA_DIR": "/custom/path/to/data"
       }
@@ -228,8 +228,8 @@ This guards against scenarios where an ACP agent itself calls Agent Router to di
 ## Development
 
 ```bash
-git clone https://github.com/peanut996/agent-router.git
-cd agent-router
+git clone https://github.com/peanut996/agent-router-mcp.git
+cd agent-router-mcp
 npm install
 ```
 

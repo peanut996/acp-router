@@ -15,29 +15,29 @@ This guide covers how to configure Agent Router with various MCP clients, troubl
 No installation required. `npx` downloads and runs Agent Router on demand:
 
 ```bash
-npx agent-router
+npx agent-router-mcp
 ```
 
 This is the simplest option and ensures you always run the latest published version. All client config examples below use `npx`.
 
 ### Option 2: Global npm install
 
-Install once, then run the `agent-router` command directly:
+Install once, then run the `agent-router-mcp` command directly:
 
 ```bash
-npm install -g agent-router
-agent-router
+npm install -g agent-router-mcp
+agent-router-mcp
 ```
 
-When using a global install, client configs can use `"command": "agent-router"` with an empty args array instead of `npx`.
+When using a global install, client configs can use `"command": "agent-router-mcp"` with an empty args array instead of `npx`.
 
 ### Option 3: Clone from source
 
 For development or running unreleased changes:
 
 ```bash
-git clone https://github.com/peanut996/agent-router.git
-cd agent-router
+git clone https://github.com/peanut996/agent-router-mcp.git
+cd agent-router-mcp
 npm install
 npm start
 ```
@@ -47,9 +47,9 @@ For client configs pointing at a local clone, use the full path to the bin entry
 ```json
 {
   "mcpServers": {
-    "agent-router": {
+    "agent-router-mcp": {
       "command": "node",
-      "args": ["/path/to/agent-router/bin/agent-router.mjs"]
+      "args": ["/path/to/agent-router-mcp/bin/agent-router.mjs"]
     }
   }
 }
@@ -70,9 +70,9 @@ For client configs pointing at a local clone, use the full path to the bin entry
 ```json
 {
   "mcpServers": {
-    "agent-router": {
+    "agent-router-mcp": {
       "command": "npx",
-      "args": ["agent-router"]
+      "args": ["agent-router-mcp"]
     }
   }
 }
@@ -85,8 +85,8 @@ If you installed Agent Router globally, use this instead:
 ```json
 {
   "mcpServers": {
-    "agent-router": {
-      "command": "agent-router"
+    "agent-router-mcp": {
+      "command": "agent-router-mcp"
     }
   }
 }
@@ -101,9 +101,9 @@ If you installed Agent Router globally, use this instead:
 ```json
 {
   "mcpServers": {
-    "agent-router": {
+    "agent-router-mcp": {
       "command": "npx",
-      "args": ["agent-router"]
+      "args": ["agent-router-mcp"]
     }
   }
 }
@@ -120,9 +120,9 @@ Reload the Cursor window after saving (Command+Shift+P > "Reload Window" on macO
 ```json
 {
   "mcpServers": {
-    "agent-router": {
+    "agent-router-mcp": {
       "command": "npx",
-      "args": ["agent-router"]
+      "args": ["agent-router-mcp"]
     }
   }
 }
@@ -139,9 +139,9 @@ Restart Windsurf after saving the config.
 ```json
 {
   "mcpServers": {
-    "agent-router": {
+    "agent-router-mcp": {
       "command": "npx",
-      "args": ["agent-router"]
+      "args": ["agent-router-mcp"]
     }
   }
 }
@@ -156,7 +156,7 @@ Any client that supports stdio MCP servers can launch Agent Router. The server c
 | Parameter | Value |
 | --- | --- |
 | Command | `npx` |
-| Args | `["agent-router"]` |
+| Args | `["agent-router-mcp"]` |
 | Transport | stdio |
 | Server name | `agent-router` |
 | Server version | `0.7.0` |
@@ -164,7 +164,7 @@ Any client that supports stdio MCP servers can launch Agent Router. The server c
 If your client requires a full command string instead of a JSON config:
 
 ```bash
-npx agent-router
+npx agent-router-mcp
 ```
 
 ## Environment Variables
@@ -178,9 +178,9 @@ Overrides the data directory location. Defaults to `~/.agent-router/`.
 ```json
 {
   "mcpServers": {
-    "agent-router": {
+    "agent-router-mcp": {
       "command": "npx",
-      "args": ["agent-router"],
+      "args": ["agent-router-mcp"],
       "env": {
         "AGENT_ROUTER_DATA_DIR": "/path/to/custom/data/dir"
       }
@@ -200,9 +200,9 @@ The maximum allowed depth is **3**. If you need to change the starting depth for
 ```json
 {
   "mcpServers": {
-    "agent-router": {
+    "agent-router-mcp": {
       "command": "npx",
-      "args": ["agent-router"],
+      "args": ["agent-router-mcp"],
       "env": {
         "AGENT_ROUTER_DEPTH": "0"
       }
@@ -240,7 +240,7 @@ After configuring your MCP client, verify that Agent Router is working:
 | --- | --- | --- |
 | Client reports "server failed to start" | Node.js not found or version < 18 | Install Node.js >= 18 and ensure it is on PATH |
 | Client reports "command not found: npx" | npm not installed or not on PATH | Install Node.js which includes npm |
-| Server starts but immediately exits | `agent-router` package not found | Run `npx agent-router` manually in a terminal to trigger the initial download |
+| Server starts but immediately exits | `agent-router-mcp` package not found | Run `npx agent-router-mcp` manually in a terminal to trigger the initial download |
 | Permission denied on data directory | `~/.agent-router/` not writable | Check directory permissions or set `AGENT_ROUTER_DATA_DIR` to a writable path |
 
 ### Tools not appearing
@@ -266,7 +266,7 @@ After configuring your MCP client, verify that Agent Router is working:
 - Run Agent Router standalone to see stderr output:
 
   ```bash
-  npx agent-router
+  npx agent-router-mcp
   ```
 
   The server reads JSON-RPC messages from stdin and writes responses to stdout. Any errors or diagnostics go to stderr.
@@ -288,5 +288,5 @@ After configuring your MCP client, verify that Agent Router is working:
 - Use `AGENT_ROUTER_DATA_DIR` to isolate a test run from your real data:
 
   ```bash
-  AGENT_ROUTER_DATA_DIR=/tmp/agent-router-test npx agent-router
+  AGENT_ROUTER_DATA_DIR=/tmp/agent-router-test npx agent-router-mcp
   ```

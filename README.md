@@ -116,20 +116,114 @@ Any client that supports stdio MCP servers can use Agent Router with the followi
 
 If you installed globally, use `"command": "agent-router-mcp"` with an empty args array instead.
 
+## CLI
+
+Agent Router ships with a command-line interface (`agent-router`) for use outside of an MCP client. Install globally to get the command on your PATH:
+
+```bash
+npm install -g agent-router-mcp
+```
+
+### Commands
+
+| Command | Description |
+| --- | --- |
+| `agent-router run` | Run a coding agent in a worktree (sync, blocks until done) |
+| `agent-router agents` | List discovered agents |
+| `agent-router models <agent>` | Probe an agent for available models |
+| `agent-router jobs` | List jobs |
+| `agent-router job <id>` | Get job details |
+| `agent-router tail <id>` | Tail job events |
+| `agent-router cancel <id>` | Cancel a running job |
+| `agent-router sessions` | List sessions |
+| `agent-router config` | Get or set config |
+
+### Examples
+
+```bash
+# List available agents
+agent-router agents
+
+# Probe models for OpenCode
+agent-router models opencode
+
+# Run a job (sync, prints JSON result when done)
+agent-router run --worktree /path/to/repo --prompt "Fix the failing tests" --agent opencode
+
+# Run with streaming events to stderr
+agent-router run --worktree /path/to/repo --prompt "Refactor utils" --stream
+
+# Run with a specific model and permission profile
+agent-router run --worktree /path/to/repo --prompt "Add tests" --model gpt-5 --permission-profile acceptEdits
+
+# Tail events for a running async job
+agent-router tail <job-id>
+
+# Cancel a job
+agent-router cancel <job-id> --reason "no longer needed"
+
+# Get current config
+agent-router config
+
+# Set default agent
+agent-router config --set --defaultAgent opencode
+```
+
+### `run` options
+
+| Flag | Description | Default |
+| --- | --- | --- |
+| `--worktree <path>` | Absolute path to worktree (required) | -- |
+| `--prompt <text>` | Task prompt (required) | -- |
+| `--agent <id>` | Agent id | auto-select |
+| `--mode <mode>` | Execution mode | `implementation` |
+| `--timeout-sec <n>` | Timeout in seconds | `3600` |
+| `--permission-profile <p>` | `plan` / `acceptEdits` / `bypassPermissions` | `bypassPermissions` |
+| `--model <id>` | Model id to use (agent-specific) | agent default |
+| `--collect-diff <bool>` | Collect git diff | `true` |
+| `--session-id <id>` | Continue an existing session | -- |
+| `--stream` | Stream events to stderr while running | off |
+
+Run `agent-router <command> --help` for command-specific options.
+
 ## Tools
 
-Agent Router exposes 8 MCP tools:
+Agent Router exposes 9 MCP tools:
 
 | Tool | Description | Key Params |
 | --- | --- | --- |
 | `discover_agents` | Discover locally installed coding agents and their ACP adapter status. Returns transport, ACP availability, registry metadata, and install hints. | `refresh` (bool, optional), `includeNotInstalled` (bool, optional) |
-| `manage_config` | Get or set Agent Router configuration including default agent, per-mode defaults, disabled agents, and safety policy. | `action` ("get" \| "set"), `defaultAgent`, `disabledAgents`, `launchExternalAgents`, `inheritEnvironment`, `allowBypassPermissions`, `registryEnabled`, `registryUrl`, `registryCacheTtlSec`, `modeDefaults` |
-| `run_agent` | Run a coding agent in an isolated worktree. Requires an absolute worktree path. Supports sync and async execution. ACP-only -- CLI fallback is not supported. | `agent` (string, optional), `worktree` (string, required), `prompt` (string, required), `mode`, `async` (bool), `sessionId`, `timeoutSec`, `permissionProfile`, `collectDiff`, `launchExternalAgents`, `inheritEnvironment`, `metadata` |
+| `get_agent_models` | Probe an ACP agent for its available model list. Starts a temporary ACP session, reads config options, and returns model choices. Use this before `run_agent` to discover valid model ids. | `agent` (string, required), `worktree` (string, optional) |
+| `manage_config` | Get or set Agent Router configuration including default agent, per-mode defaults, disabled agents, and safety policy. | `action` ("get" \| "set"), `defaultAgent`, `disabledAgents`, `launchExternalAgents`, `inheritEnvironment`, `allowBypassPermissions`, `defaultPermissionProfile`, `registryEnabled`, `registryUrl`, `registryCacheTtlSec`, `modeDefaults` |
+| `run_agent` | Run a coding agent in an isolated worktree. Requires an absolute worktree path. Supports sync and async execution. ACP-only -- CLI fallback is not supported. | `agent` (string, optional), `worktree` (string, required), `prompt` (string, required), `mode`, `async` (bool), `sessionId`, `timeoutSec`, `permissionProfile`, `model`, `collectDiff`, `launchExternalAgents`, `inheritEnvironment`, `metadata` |
 | `list_jobs` | List Agent Router jobs from the local registry with optional filters. | `status`, `agent`, `worktree`, `limit` |
 | `get_job` | Get an Agent Router job by id. | `jobId` (string, required) |
-| `tail_job_events` | Return newly recorded job events from the JSONL event log for polling-style progress updates. | `jobId` (string, required), `afterEventIndex`, `limit`, `includeLogTail`, `logTailBytes` |
+| `tail_job_events` | Return newly recorded job events from the JSONL event log for polling-style progress updates. Events are streamed in real-time for long-running async jobs. | `jobId` (string, required), `afterEventIndex`, `limit`, `includeLogTail`, `logTailBytes` |
 | `cancel_job` | Cancel a job and terminate an active child process when the current MCP server owns it. | `jobId` (string, required), `reason` (string, optional) |
 | `manage_sessions` | List, continue, or archive Agent Router sessions. | `action` ("list" \| "continue" \| "archive"), `sessionId`, `prompt`, `agent`, `worktree`, `async`, `includeArchived`, `limit`, `launchExternalAgents`, `inheritEnvironment`, `timeoutSec` |
+
+### Permission Profiles
+
+Permission profiles control what the spawned agent is allowed to do. They map to the ACP adapter's mode setting and follow Claude Code naming conventions:
+
+| Profile | Description |
+| --- | --- |
+| `plan` | Read-only / planning mode. The agent should not modify files. Agent Router also detects `plan_mode_violation` when an agent modifies files despite this profile (guards against upstream ACP adapters that don't enforce read-only). |
+| `acceptEdits` | The agent may edit files within the worktree. |
+| `bypassPermissions` | The agent bypasses all permission checks (default). |
+
+Set the default profile via `manage_config` (`defaultPermissionProfile`) or override per-job via `run_agent` (`permissionProfile`). `bypassPermissions` can be disabled globally via `safety.allowBypassPermissions`.
+
+### Model Selection
+
+Some ACP agents (e.g. OpenCode) support multiple models. Use `get_agent_models` to discover available model ids before launching a job, then pass the chosen id via `run_agent`'s `model` parameter:
+
+```text
+get_agent_models with agent "opencode"
+run_agent with agent "opencode", model "gpt-5", worktree "/path", prompt "..."
+```
+
+This is useful when an agent's default model is unavailable (e.g. insufficient balance) and you want to switch to an alternative.
 
 ## ACP-Only Mode
 
@@ -178,7 +272,7 @@ Agent Router stores its configuration in `~/.agent-router/config.json`.
 | `safety.launchExternalAgents` | boolean | `true` | Allow launching external agent processes |
 | `safety.inheritEnvironment` | boolean | `true` | Inherit parent process environment for child agents |
 | `safety.allowBypassPermissions` | boolean | `true` | Allow `bypassPermissions` permission profile |
-| `safety.defaultPermissionProfile` | string | `"bypassPermissions"` | Default permission profile for new jobs |
+| `safety.defaultPermissionProfile` | string | `"bypassPermissions"` | Default permission profile for new jobs (`plan` / `acceptEdits` / `bypassPermissions`) |
 | `safety.requireAbsoluteWorktree` | boolean | `true` | Require an absolute worktree path |
 
 Read or update config through the `manage_config` tool:
@@ -224,6 +318,12 @@ Agent Router prevents infinite agent dispatch loops using the `AGENT_ROUTER_DEPT
 - When `run_agent` is called and `AGENT_ROUTER_DEPTH` is already at or above 3, the job immediately fails with a `recursion_limit` error.
 
 This guards against scenarios where an ACP agent itself calls Agent Router to dispatch another agent, creating a loop. The depth counter propagates through the process tree so nested dispatches are tracked across the entire chain.
+
+## Plan Mode Violation Detection
+
+When `permissionProfile` is set to `plan`, the agent is expected to operate in read-only mode. However, some upstream ACP adapters do not enforce read-only mode. Agent Router detects this by checking for file changes in the worktree after a `plan` job completes.
+
+If files were modified despite the `plan` profile, the job result includes a `plan_mode_violation` warning listing the changed files. This helps identify adapter bugs and prevents unintended modifications during planning.
 
 ## Development
 

@@ -177,8 +177,8 @@ Agent Router stores its configuration in `~/.agent-router/config.json`.
 | `registryCacheTtlSec` | number | `86400` | ACP registry cache TTL in seconds (24 hours) |
 | `safety.launchExternalAgents` | boolean | `true` | Allow launching external agent processes |
 | `safety.inheritEnvironment` | boolean | `true` | Inherit parent process environment for child agents |
-| `safety.allowBypassPermissions` | boolean | `false` | Allow `bypass_permissions` permission profile |
-| `safety.defaultPermissionProfile` | string | `"workspace_write"` | Default permission profile for new jobs |
+| `safety.allowBypassPermissions` | boolean | `true` | Allow `bypassPermissions` permission profile |
+| `safety.defaultPermissionProfile` | string | `"bypassPermissions"` | Default permission profile for new jobs |
 | `safety.requireAbsoluteWorktree` | boolean | `true` | Require an absolute worktree path |
 
 Read or update config through the `manage_config` tool:

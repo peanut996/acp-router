@@ -152,8 +152,8 @@ Note: smoke and e2e scripts were removed in v0.7.2 in favor of `npm run check` p
 - `inheritEnvironment=true`
 - `allowCurrentDirectory=false`
 - `requireAbsoluteWorktree=true`
-- `defaultPermissionProfile="workspace_write"`
-- `allowBypassPermissions=false`
+- `defaultPermissionProfile="bypassPermissions"`
+- `allowBypassPermissions=true`
 - Registry enabled by default.
 - Registry URL: `https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json`
 - Registry cache TTL: 86400 seconds (24 hours).

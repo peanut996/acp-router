@@ -33,18 +33,18 @@ const MAX_RECURSION_DEPTH = 3;
 const ACP_MODE_MAP = {
   claude: {
     plan: "plan",
-    accept_edits: "acceptEdits",
-    bypass_permissions: "bypassPermissions"
+    acceptEdits: "acceptEdits",
+    bypassPermissions: "bypassPermissions"
   },
   codex: {
     plan: "read-only",
-    accept_edits: "auto",
-    bypass_permissions: "full-access"
+    acceptEdits: "auto",
+    bypassPermissions: "full-access"
   },
   opencode: {
     plan: "plan",
-    accept_edits: "build",
-    bypass_permissions: "build"
+    acceptEdits: "build",
+    bypassPermissions: "build"
   }
 };
 
@@ -209,11 +209,11 @@ async function createJob(args) {
   const registry = await readRegistry();
   const mode = args.mode ?? "implementation";
   const permissionProfile = args.permissionProfile ?? config.safety.defaultPermissionProfile;
-  if (permissionProfile === "bypass_permissions" && !config.safety.allowBypassPermissions) {
+  if (permissionProfile === "bypassPermissions" && !config.safety.allowBypassPermissions) {
     return {
       status: "failed",
-      error: "bypass_permissions_disabled",
-      message: "The Agent Router config does not allow bypass_permissions by default."
+      error: "bypassPermissions_disabled",
+      message: "The Agent Router config does not allow bypassPermissions by default."
     };
   }
 
@@ -938,7 +938,7 @@ async function continueSession(args) {
     inheritEnvironment: args.inheritEnvironment,
     timeoutSec: args.timeoutSec,
     mode: "implementation",
-    permissionProfile: "accept_edits",
+    permissionProfile: "bypassPermissions",
     collectDiff: true
   });
 }
@@ -966,8 +966,8 @@ async function readConfig() {
     safety: {
       requireAbsoluteWorktree: true,
       launchExternalAgents: true,
-      defaultPermissionProfile: "accept_edits",
-      allowBypassPermissions: false,
+      defaultPermissionProfile: "bypassPermissions",
+      allowBypassPermissions: true,
       inheritEnvironment: true
     },
     updatedAt: null
@@ -1734,7 +1734,7 @@ async function runAcpStdioJob({ args, job, session, selectedAgent, timeoutSec, a
   if (!launchTarget) throw new Error(`No ACP adapter is available for ${selectedAgent.id}.`);
   const adapterLabel = acpSpec.label ?? `${selectedAgent.displayName} ACP`;
   const adapterStatus = acpSpec.adapterStatus ?? `${selectedAgent.id}_acp`;
-  const permissionProfile = job.permissionProfile ?? "accept_edits";
+  const permissionProfile = job.permissionProfile ?? "bypassPermissions";
   const events = [];
   const startedAt = Date.now();
   let providerSessionId = session.providerSessionId ?? null;
@@ -1984,7 +1984,7 @@ class AcpStdioClient {
     this.cwd = cwd;
     this.timeoutMs = timeoutMs;
     this.env = env ?? safeEnv();
-    this.permissionProfile = permissionProfile ?? "accept_edits";
+    this.permissionProfile = permissionProfile ?? "bypassPermissions";
     this.onEvent = onEvent;
     this.onProcessStart = onProcessStart;
     this.nextId = 1;
@@ -2122,10 +2122,9 @@ class AcpStdioClient {
 
   resolvePermissionOutcome(params) {
     switch (this.permissionProfile) {
-      case "bypass_permissions":
+      case "bypassPermissions":
         return "approved";
-      case "accept_edits":
-      case "accept_edits": {
+      case "acceptEdits": {
         const perms = params?.permissions ?? [];
         const hasNonFilePermission = perms.some((p) => p.type !== "file_edit" && p.type !== "write");
         if (hasNonFilePermission) return "cancelled";
@@ -2496,7 +2495,7 @@ async function startMcpServer() {
       registryUrl: z.string().optional().describe("ACP registry URL override"),
       registryCacheTtlSec: z.number().optional().describe("ACP registry cache TTL in seconds"),
       launchExternalAgents: z.boolean().optional().describe("Allow launching external agent processes"),
-      allowBypassPermissions: z.boolean().optional().describe("Allow bypass_permissions permission profile"),
+      allowBypassPermissions: z.boolean().optional().describe("Allow bypassPermissions permission profile"),
       inheritEnvironment: z.boolean().optional().describe("Inherit parent process environment for child agents"),
       modeDefaults: z.record(z.string(), z.unknown()).optional().describe("Per-mode default agent id mapping")
     },
@@ -2519,7 +2518,7 @@ async function startMcpServer() {
       async: z.boolean().optional().describe("Return immediately and run the job in the background"),
       sessionId: z.string().nullable().optional().describe("Existing session id to continue"),
       timeoutSec: z.number().optional().describe("Job timeout in seconds"),
-      permissionProfile: z.enum(["plan", "accept_edits", "bypass_permissions"]).optional().describe("Permission profile for the agent"),
+      permissionProfile: z.enum(["plan", "acceptEdits", "bypassPermissions"]).optional().describe("Permission profile for the agent"),
       collectDiff: z.boolean().optional().describe("Collect git diff before and after the run"),
       launchExternalAgents: z.boolean().optional().describe("Override config for launching external agents"),
       inheritEnvironment: z.boolean().optional().describe("Override config for inheriting parent environment"),

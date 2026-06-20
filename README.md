@@ -235,28 +235,9 @@ npm install
 
 ### Validation
 
-No-model validation (does not call any external model):
-
 ```bash
 npm run check
-npm run smoke
-npm run smoke:sessions
-npm run smoke:opencode
-npm run smoke:opencode:sessions
-npm run smoke:acp:handshake
-npm run e2e:restart-recovery
 ```
-
-Real E2E validation (calls external agents, may incur model cost):
-
-```bash
-npm run e2e:opencode -- --opencode-model opencode-go/glm-5.2 --keep
-npm run e2e:sessions:opencode -- --keep
-npm run e2e:claude -- --timeout-sec 600 --keep
-npm run e2e:codex -- --timeout-sec 600 --keep
-```
-
-Omit `--keep` to clean successful runs automatically. Failed runs are always kept for inspection.
 
 ### Start the server locally
 

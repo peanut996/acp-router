@@ -30,6 +30,24 @@ let orphanRecoveryPromise = null;
 
 const MAX_RECURSION_DEPTH = 3;
 
+const ACP_MODE_MAP = {
+  claude: {
+    plan: "plan",
+    accept_edits: "acceptEdits",
+    bypass_permissions: "bypassPermissions"
+  },
+  codex: {
+    plan: "read-only",
+    accept_edits: "auto",
+    bypass_permissions: "full-access"
+  },
+  opencode: {
+    plan: "plan",
+    accept_edits: "build",
+    bypass_permissions: "build"
+  }
+};
+
 const BUILT_IN_AGENTS = [
   {
     id: "opencode",
@@ -920,7 +938,7 @@ async function continueSession(args) {
     inheritEnvironment: args.inheritEnvironment,
     timeoutSec: args.timeoutSec,
     mode: "implementation",
-    permissionProfile: "workspace_write",
+    permissionProfile: "accept_edits",
     collectDiff: true
   });
 }
@@ -948,7 +966,7 @@ async function readConfig() {
     safety: {
       requireAbsoluteWorktree: true,
       launchExternalAgents: true,
-      defaultPermissionProfile: "workspace_write",
+      defaultPermissionProfile: "accept_edits",
       allowBypassPermissions: false,
       inheritEnvironment: true
     },
@@ -1716,6 +1734,7 @@ async function runAcpStdioJob({ args, job, session, selectedAgent, timeoutSec, a
   if (!launchTarget) throw new Error(`No ACP adapter is available for ${selectedAgent.id}.`);
   const adapterLabel = acpSpec.label ?? `${selectedAgent.displayName} ACP`;
   const adapterStatus = acpSpec.adapterStatus ?? `${selectedAgent.id}_acp`;
+  const permissionProfile = job.permissionProfile ?? "accept_edits";
   const events = [];
   const startedAt = Date.now();
   let providerSessionId = session.providerSessionId ?? null;
@@ -1727,6 +1746,7 @@ async function runAcpStdioJob({ args, job, session, selectedAgent, timeoutSec, a
     cwd: args.worktree,
     timeoutMs: timeoutSec * 1000,
     env: agentEnv,
+    permissionProfile,
     onEvent: (event) => events.push(event),
     onProcessStart: (child) => controller?.recordProcess({
       pid: child.pid,
@@ -1787,6 +1807,39 @@ async function runAcpStdioJob({ args, job, session, selectedAgent, timeoutSec, a
         configOptions: agentConfigOptions,
         availableModels
       });
+    }
+
+    const modeOption = agentConfigOptions.find((o) => o.category === "mode" || o.id === "mode");
+    const targetMode = ACP_MODE_MAP[selectedAgent.id]?.[permissionProfile];
+    if (modeOption && targetMode) {
+      const modeValueExists = modeOption.options.some((o) => o.value === targetMode);
+      if (modeValueExists) {
+        const setConfigResult = await client.request("session/set_config_option", {
+          sessionId: providerSessionId,
+          configId: modeOption.id ?? "mode",
+          value: targetMode
+        });
+        if (Array.isArray(setConfigResult?.configOptions)) {
+          agentConfigOptions = summarizeAcpConfigOptions(setConfigResult.configOptions);
+          availableModels = extractModelOptions(agentConfigOptions);
+        }
+        events.push({
+          type: "acp_mode_set",
+          timestamp: new Date().toISOString(),
+          message: `Set ${selectedAgent.id} mode to ${targetMode} (permissionProfile=${permissionProfile}).`,
+          permissionProfile,
+          mode: targetMode
+        });
+      } else {
+        events.push({
+          type: "acp_mode_set_skipped",
+          timestamp: new Date().toISOString(),
+          message: `${adapterLabel} mode option does not include value "${targetMode}" for permissionProfile=${permissionProfile}; skipping mode setting.`,
+          permissionProfile,
+          attemptedMode: targetMode,
+          availableModeValues: modeOption.options.map((o) => o.value)
+        });
+      }
     }
 
     const promptResult = await client.request("session/prompt", {
@@ -1925,12 +1978,13 @@ function resolveAcpLaunchTarget(acpSpec, selectedAgent, worktree) {
 }
 
 class AcpStdioClient {
-  constructor({ command, args, cwd, timeoutMs, env, onEvent, onProcessStart }) {
+  constructor({ command, args, cwd, timeoutMs, env, permissionProfile, onEvent, onProcessStart }) {
     this.command = command;
     this.args = args;
     this.cwd = cwd;
     this.timeoutMs = timeoutMs;
     this.env = env ?? safeEnv();
+    this.permissionProfile = permissionProfile ?? "accept_edits";
     this.onEvent = onEvent;
     this.onProcessStart = onProcessStart;
     this.nextId = 1;
@@ -2051,16 +2105,37 @@ class AcpStdioClient {
 
   handleClientRequest(message) {
     if (message.method === "session/request_permission") {
+      const outcome = this.resolvePermissionOutcome(message.params);
       this.logEvents.push({
-        type: "acp_permission_cancelled",
+        type: outcome === "approved" ? "acp_permission_approved" : "acp_permission_cancelled",
         timestamp: new Date().toISOString(),
-        message: "Agent Router cancelled an ACP permission request.",
+        message: outcome === "approved"
+          ? `Agent Router approved an ACP permission request (${this.permissionProfile}).`
+          : "Agent Router cancelled an ACP permission request.",
         params: message.params
       });
-      this.respond(message.id, { outcome: "cancelled" });
+      this.respond(message.id, { outcome });
       return;
     }
     this.respondError(message.id, -32601, `Unsupported client method: ${message.method}`);
+  }
+
+  resolvePermissionOutcome(params) {
+    switch (this.permissionProfile) {
+      case "bypass_permissions":
+        return "approved";
+      case "accept_edits":
+      case "accept_edits": {
+        const perms = params?.permissions ?? [];
+        const hasNonFilePermission = perms.some((p) => p.type !== "file_edit" && p.type !== "write");
+        if (hasNonFilePermission) return "cancelled";
+        return "approved";
+      }
+      case "plan":
+        return "cancelled";
+      default:
+        return "cancelled";
+    }
   }
 
   handleNotification(message) {
@@ -2444,7 +2519,7 @@ async function startMcpServer() {
       async: z.boolean().optional().describe("Return immediately and run the job in the background"),
       sessionId: z.string().nullable().optional().describe("Existing session id to continue"),
       timeoutSec: z.number().optional().describe("Job timeout in seconds"),
-      permissionProfile: z.enum(["plan", "workspace_write", "accept_edits", "bypass_permissions"]).optional().describe("Permission profile for the agent"),
+      permissionProfile: z.enum(["plan", "accept_edits", "bypass_permissions"]).optional().describe("Permission profile for the agent"),
       collectDiff: z.boolean().optional().describe("Collect git diff before and after the run"),
       launchExternalAgents: z.boolean().optional().describe("Override config for launching external agents"),
       inheritEnvironment: z.boolean().optional().describe("Override config for inheriting parent environment"),

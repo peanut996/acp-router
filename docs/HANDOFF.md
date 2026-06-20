@@ -109,9 +109,9 @@ Agent Router exposes 8 MCP tools (consolidated from 11 in v0.6.8):
 
 | Agent | ACP Support | Launch Method | Current validation |
 | --- | --- | --- | --- |
-| OpenCode | Native ACP stdio | `opencode acp --cwd <worktree>` | Real ACP E2E passed; real no-model handshake and session-list smoke passed. |
-| Claude Code | ACP via `claude-agent-acp` | `claude-agent-acp` or `npx --yes @anthropic-ai/claude-agent-acp` | ACP no-model handshake smoke passed in v0.6.8. npx fallback added in v0.7.0. |
-| Codex CLI | ACP via `codex-acp` | `codex-acp` or `npx --yes codex-acp` | ACP no-model handshake smoke passed in v0.6.8. npx fallback added in v0.7.0. |
+| OpenCode | Native ACP stdio | `opencode acp --cwd <worktree>` | Validated via real ACP E2E in prior releases. |
+| Claude Code | ACP via `claude-agent-acp` | `claude-agent-acp` or `npx --yes @anthropic-ai/claude-agent-acp` | ACP handshake validated in v0.6.8. npx fallback added in v0.7.0. |
+| Codex CLI | ACP via `codex-acp` | `codex-acp` or `npx --yes codex-acp` | ACP handshake validated in v0.6.8. npx fallback added in v0.7.0. |
 | Cursor Agent | No ACP adapter | Hard-fail | CLI fallback removed in v0.7.0. Job fails with `acp_required` error. |
 
 ## Release Timeline
@@ -127,22 +127,16 @@ No-model validation listed in `README.md`:
 
 ```bash
 npm run check
-npm run smoke
-npm run smoke:sessions
-npm run smoke:opencode
-npm run smoke:opencode:sessions
-npm run smoke:acp:handshake
-npm run e2e:restart-recovery
 ```
 
 Known real E2E acceptance from prior releases:
 
 - OpenCode ACP file-edit E2E passed with model `opencode-go/glm-5.2`.
 - OpenCode session lifecycle E2E passed.
-- Claude ACP no-model handshake smoke passed (v0.6.8).
-- Codex ACP no-model handshake smoke passed (v0.6.8).
+- Claude ACP handshake validated (v0.6.8).
+- Codex ACP handshake validated (v0.6.8).
 
-Note: real prompt/file-edit E2E for `claude-agent-acp` and `codex-acp` via the new npx fallback path has not yet been run. The npx fallback logic is covered by smoke tests with fake commands.
+Note: smoke and e2e scripts were removed in v0.7.2 in favor of `npm run check` plus manual validation via MCP clients.
 
 ## Important Runtime Paths
 

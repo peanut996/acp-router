@@ -8,7 +8,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 
 const SERVER_NAME = "acp-coding-agent-dispatcher";
-const SERVER_VERSION = "0.5.5";
+const SERVER_VERSION = "0.5.6";
 const DATA_DIR = process.env.AGENT_DISPATCHER_DATA_DIR
   ? path.resolve(process.env.AGENT_DISPATCHER_DATA_DIR)
   : path.join(os.homedir(), ".codex", "agent-dispatcher");
@@ -186,10 +186,10 @@ const BUILT_IN_AGENTS = [
   {
     id: "cursor-agent",
     displayName: "Cursor Agent",
-    executable: "agent",
+    executable: "cursor",
     versionArgs: ["--version"],
     transport: "cli",
-    command: "agent --print --output-format stream-json --workspace <worktree>",
+    command: "cursor agent --cwd <worktree> --output-format streaming-json --permission-mode <mode> --single <prompt>",
     capabilities: ["file_edit", "shell", "diff_collection"],
     source: ["path"],
     notes: ["CLI fallback target; sessions are dispatcher-managed until an ACP adapter is available."]
@@ -1796,6 +1796,7 @@ function getCliAdapterSpec(agentId) {
       label: "Cursor Agent",
       adapterStatus: "cursor_agent_cli",
       buildArgs: ({ prompt, worktree, permissionProfile, providerSessionId }) => [
+        "agent",
         "--cwd",
         worktree,
         "--output-format",
@@ -2347,16 +2348,23 @@ function findStopReasonInValue(value, depth = 0) {
 
 const AGENT_ERROR_PATTERNS = [
   /insufficient balance/i,
+  /rate[_ -]?limit/i,
   /rate limit/i,
   /quota/i,
   /unauthorized/i,
   /forbidden/i,
   /permission denied/i,
+  /auth(?:entication)?[_ -]?failed/i,
   /auth(?:entication)? failed/i,
   /failed to authenticate/i,
   /not logged in/i,
+  /api[_/-]?retry/i,
+  /api[_-]?error[_-]?status/i,
+  /error[_-]?status/i,
   /\berror\b/i
 ];
+
+const AGENT_ERROR_KEY_PATTERN = /(?:api[_-]?error[_-]?status|error[_-]?status|error|fail|auth|login|rate|quota|retry|reason|code)/i;
 
 function extractAgentErrors(events) {
   const candidates = [];
@@ -2369,7 +2377,8 @@ function extractAgentErrors(events) {
     candidates.push(event.params?.error?.message);
     candidates.push(event.result?.error?.message);
     candidates.push(event.payload?.error?.message);
-    candidates.push(...collectStrings(event.payload));
+    candidates.push(...collectDiagnosticStrings(event.params));
+    candidates.push(...collectDiagnosticStrings(event.payload));
   }
   return uniqueStrings(
     candidates
@@ -2377,15 +2386,25 @@ function extractAgentErrors(events) {
       .map((value) => preview(value.trim().replace(/\s+/g, " "), 500))
       .filter(Boolean)
       .filter((value) => AGENT_ERROR_PATTERNS.some((pattern) => pattern.test(value)))
-  ).slice(0, 5);
+  ).slice(0, 10);
 }
 
-function collectStrings(value, depth = 0) {
+function collectDiagnosticStrings(value, depth = 0) {
   if (depth > 5 || value == null) return [];
   if (typeof value === "string") return [value];
-  if (Array.isArray(value)) return value.flatMap((item) => collectStrings(item, depth + 1));
+  if (Array.isArray(value)) return value.flatMap((item) => collectDiagnosticStrings(item, depth + 1));
   if (typeof value !== "object") return [];
-  return Object.values(value).flatMap((item) => collectStrings(item, depth + 1));
+  const values = [];
+  for (const [key, child] of Object.entries(value)) {
+    if (
+      AGENT_ERROR_KEY_PATTERN.test(key)
+      && (typeof child === "string" || typeof child === "number" || typeof child === "boolean")
+    ) {
+      values.push(`${key}: ${child}`);
+    }
+    values.push(...collectDiagnosticStrings(child, depth + 1));
+  }
+  return values;
 }
 
 function buildFailureReason(adapterLabel, error, agentErrors) {

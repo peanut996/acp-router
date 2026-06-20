@@ -33,7 +33,7 @@ try {
 
   if (
     result.stderr
-    || result.serverVersion !== "0.5.5"
+    || result.serverVersion !== "0.5.6"
     || result.discoveryCount < 1
     || result.runStatus !== "completed"
     || result.adapterStatus !== "opencode_acp"
@@ -42,6 +42,11 @@ try {
     || result.failureStatus !== "timed_out"
     || !result.failureReason?.includes("Insufficient balance")
     || !result.agentErrors?.some((error) => error.includes("Rate limit exceeded"))
+    || !result.agentErrors?.some((error) => error.includes("system/api_retry"))
+    || !result.agentErrors?.some((error) => error.includes("error_status: 429"))
+    || !result.agentErrors?.some((error) => error.includes("api_error_status: 429"))
+    || !result.agentErrors?.some((error) => error.includes("authentication_failed"))
+    || !result.agentErrors?.some((error) => error.includes("Not logged in"))
     || !result.failureAvailableModels?.some((model) => model.value === "opencode-go/glm-5.2")
     || result.claudeDiscoveredVersion !== "fake-claude 999.0.0"
     || result.claudeStatus !== "completed"
@@ -104,6 +109,7 @@ process.stdin.on("data", (chunk) => {
       if (promptText.includes("Trigger failure")) {
         write({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "fake-opencode-session", update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Insufficient balance" } } } });
         write({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "fake-opencode-session", update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Rate limit exceeded" } } } });
+        write({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "fake-opencode-session", update: { sessionUpdate: "system/api_retry", error: "rate_limit", error_status: 429, api_error_status: 429, authStatus: "authentication_failed", message: "Not logged in · Please run /login" } } });
         return;
       }
       write({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "fake-opencode-session", update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Fake OpenCode completed." } } } });
@@ -150,11 +156,15 @@ if (process.argv.join(" ").includes("Smoke async cancel") || process.argv.join("
 }
 
 async function createFakeCursorAgent(binDir) {
-  const scriptPath = path.join(binDir, "agent");
+  const scriptPath = path.join(binDir, "cursor");
   const script = `#!/usr/bin/env node
 if (process.argv.includes("--version") || process.argv.includes("-v")) {
-  console.log("fake-agent 999.0.0");
+  console.log("fake-cursor 999.0.0");
   process.exit(0);
+}
+if (process.argv[2] !== "agent") {
+  console.error("expected cursor agent subcommand");
+  process.exit(1);
 }
 console.log(JSON.stringify({ type: "message", sessionId: "fake-cursor-session", message: "Fake Cursor Agent completed." }));
 `;

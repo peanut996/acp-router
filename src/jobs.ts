@@ -8,7 +8,7 @@ import {
   SERVER_NAME,
   SERVER_VERSION,
   COMMAND_TIMEOUT_MS
-} from "./constants.mjs";
+} from "./constants.js";
 import {
   safeEnv,
   clampInteger,
@@ -17,7 +17,7 @@ import {
   isPlainObject,
   createId,
   resolveBooleanOverride
-} from "./utils.mjs";
+} from "./utils.js";
 import {
   readConfig,
   readRegistry,
@@ -27,7 +27,7 @@ import {
   recordJobProcess,
   normalizeProcessInfo,
   appendJsonl
-} from "./storage.mjs";
+} from "./storage.js";
 import {
   discoverAgents,
   chooseAgent,
@@ -37,12 +37,94 @@ import {
   buildAcpUnavailableError,
   planLaunch,
   resolveAcpLaunchTarget
-} from "./agents.mjs";
-import { AcpStdioClient, runAcpStdioJob } from "./acp-client.mjs";
+} from "./agents.js";
+import { AcpStdioClient, runAcpStdioJob } from "./acp-client.js";
 
-const ACTIVE_RUNS = new Map();
+interface JobArgs {
+  agent?: string | null;
+  worktree: string;
+  prompt: string;
+  mode?: string;
+  async?: boolean;
+  sessionId?: string | null;
+  timeoutSec?: number;
+  permissionProfile?: string;
+  model?: string;
+  collectDiff?: boolean;
+  launchExternalAgents?: boolean;
+  inheritEnvironment?: boolean;
+  metadata?: Record<string, unknown>;
+}
 
-async function createJob(args) {
+interface RunController {
+  jobId: string;
+  cancelRequested: boolean;
+  cancelReason: string | null;
+  cancelProcess: (() => boolean) | null;
+  processInfo: any | null;
+  recordProcess: (info: any) => Promise<void>;
+  cancel: (reason?: string) => boolean;
+}
+
+interface RunRequest {
+  args: JobArgs;
+  job: any;
+  session: any;
+  selectedAgent: any;
+  timeoutSec: number;
+  agentEnv: Record<string, string | undefined>;
+  launchKind: string;
+}
+
+interface ListJobsArgs {
+  limit?: number;
+  status?: string | null;
+  agent?: string | null;
+  worktree?: string | null;
+}
+
+interface GetJobArgs {
+  jobId: string;
+}
+
+interface TailJobEventsArgs {
+  jobId: string;
+  afterEventIndex?: number;
+  limit?: number;
+  includeLogTail?: boolean;
+  logTailBytes?: number;
+}
+
+interface CancelJobArgs {
+  jobId: string;
+  reason?: string;
+}
+
+interface ListSessionsArgs {
+  includeArchived?: boolean;
+  agent?: string | null;
+  worktree?: string | null;
+  limit?: number;
+}
+
+interface ContinueSessionArgs {
+  agent?: string | null;
+  sessionId: string;
+  prompt?: string;
+  worktree?: string;
+  async?: boolean;
+  launchExternalAgents?: boolean;
+  inheritEnvironment?: boolean;
+  timeoutSec?: number;
+}
+
+interface ArchiveSessionArgs {
+  sessionId: string;
+}
+
+const ACTIVE_RUNS = new Map<string, RunController>();
+
+async function createJob(args: JobArgs): Promise<any> {
   const recursionDepth = Number.parseInt(process.env.ACP_ROUTER_DEPTH ?? "0", 10) || 0;
   if (recursionDepth >= MAX_RECURSION_DEPTH) {
     return {
@@ -76,7 +158,7 @@ async function createJob(args) {
   const availableAgents = await discoverAgents({ includeNotInstalled: false }).then((value) => value.agents);
   const selected = args.agent
     ? { agentId: args.agent, reason: "agent explicitly requested" }
-    : chooseAgent(availableAgents, config, mode);
+    : chooseAgent(availableAgents, config as any, mode);
   if (!selected.agentId) {
     return {
       status: "failed",
@@ -154,7 +236,7 @@ async function createJob(args) {
     canContinue: true
   };
 
-  const job = {
+  const job: any = {
     jobId,
     sessionId,
     agentId: selected.agentId,
@@ -191,7 +273,7 @@ async function createJob(args) {
   await appendJsonl(logPath, recentEvents.map((event) => ({ ...event, jobId, sessionId, agentId: selected.agentId })));
 
   if (launchPlan.runnable) {
-    const runRequest = {
+    const runRequest: RunRequest = {
       args,
       job,
       session,
@@ -238,13 +320,13 @@ async function createJob(args) {
   };
 }
 
-function startBackgroundJobRun(runRequest) {
+function startBackgroundJobRun(runRequest: RunRequest): void {
   executeAndPersistJobRun(runRequest).catch(async (error) => {
     await markJobRunCrashed(runRequest, error);
   });
 }
 
-async function executeAndPersistJobRun({ args, job, session, selectedAgent, timeoutSec, agentEnv, launchKind }) {
+async function executeAndPersistJobRun({ args, job, session, selectedAgent, timeoutSec, agentEnv, launchKind }: RunRequest): Promise<void> {
   const controller = createRunController(job.jobId);
   ACTIVE_RUNS.set(job.jobId, controller);
   try {
@@ -266,20 +348,20 @@ async function executeAndPersistJobRun({ args, job, session, selectedAgent, time
   }
 }
 
-function createRunController(jobId) {
+function createRunController(jobId: string): RunController {
   return {
     jobId,
     cancelRequested: false,
     cancelReason: null,
     cancelProcess: null,
     processInfo: null,
-    async recordProcess(processInfo) {
+    async recordProcess(processInfo: any) {
       const normalized = normalizeProcessInfo(processInfo);
       if (!normalized) return;
       this.processInfo = normalized;
       await recordJobProcess(this.jobId, normalized);
     },
-    cancel(reason) {
+    cancel(reason?: string) {
       this.cancelRequested = true;
       this.cancelReason = reason || "Cancelled by Agent Router caller.";
       if (typeof this.cancelProcess === "function") {
@@ -290,7 +372,12 @@ function createRunController(jobId) {
   };
 }
 
-async function persistJobRunResult({ job, session, selectedAgent, runResult }) {
+async function persistJobRunResult({ job, session, selectedAgent, runResult }: {
+  job: any;
+  session: any;
+  selectedAgent: any;
+  runResult: any;
+}): Promise<void> {
   const registry = await readRegistry();
   const currentJob = registry.jobs[job.jobId] ?? job;
   const currentSession = registry.sessions[session.sessionId] ?? session;
@@ -314,14 +401,14 @@ async function persistJobRunResult({ job, session, selectedAgent, runResult }) {
   }
   Object.assign(currentSession, runResult.sessionPatch);
   currentJob.recentEvents = [...(currentJob.recentEvents ?? []), ...runResult.events];
-  currentSession.updatedAt = currentJob.endedAt;
-  currentSession.lastJobId = currentJob.jobId;
+  (currentSession as any).updatedAt = currentJob.endedAt;
+  (currentSession as any).lastJobId = currentJob.jobId;
   registry.jobs[currentJob.jobId] = currentJob;
   registry.sessions[currentSession.sessionId] = currentSession;
   await writeRegistry(registry);
 }
 
-async function markJobRunCrashed(runRequest, error) {
+async function markJobRunCrashed(runRequest: RunRequest, error: Error): Promise<void> {
   ACTIVE_RUNS.delete(runRequest.job.jobId);
   const failedAt = new Date().toISOString();
   const message = `Agent Router runner crashed: ${error.message}`;
@@ -354,7 +441,7 @@ async function markJobRunCrashed(runRequest, error) {
   });
 }
 
-async function listJobs(args) {
+async function listJobs(args: ListJobsArgs): Promise<{ jobs: any[] }> {
   const registry = await readRegistry();
   const limit = args.limit ?? 50;
   const jobs = Object.values(registry.jobs)
@@ -366,14 +453,14 @@ async function listJobs(args) {
   return { jobs };
 }
 
-async function getJob(args) {
+async function getJob(args: GetJobArgs): Promise<any> {
   const registry = await readRegistry();
   const job = registry.jobs[args.jobId];
   if (!job) return { jobId: args.jobId, status: "not_found" };
   return { job };
 }
 
-async function tailJobEvents(args) {
+async function tailJobEvents(args: TailJobEventsArgs): Promise<any> {
   const registry = await readRegistry();
   const job = registry.jobs[args.jobId];
   if (!job) {
@@ -396,7 +483,7 @@ async function tailJobEvents(args) {
   const lastReturned = events.length > 0
     ? events[events.length - 1].eventIndex
     : afterEventIndex;
-  const result = {
+  const result: any = {
     jobId: job.jobId,
     status: job.status,
     agentId: job.agentId,
@@ -422,7 +509,7 @@ async function tailJobEvents(args) {
   return result;
 }
 
-async function cancelJob(args) {
+async function cancelJob(args: CancelJobArgs): Promise<any> {
   const registry = await readRegistry();
   const job = registry.jobs[args.jobId];
   if (!job) return { jobId: args.jobId, status: "not_found" };
@@ -456,12 +543,12 @@ async function cancelJob(args) {
       }
     ];
     await writeRegistry(registry);
-    await appendJsonl(job.logPath, job.recentEvents.slice(-1).map((event) => ({ ...event, jobId: job.jobId, sessionId: job.sessionId, agentId: job.agentId })));
+    await appendJsonl(job.logPath ?? "", job.recentEvents.slice(-1).map((event) => ({ ...event, jobId: job.jobId, sessionId: job.sessionId, agentId: job.agentId })));
   }
   return { jobId: job.jobId, status: job.status, activeProcessCancelled };
 }
 
-async function listSessions(args) {
+async function listSessions(args: ListSessionsArgs): Promise<any> {
   const registry = await readRegistry();
   const config = await readConfig();
   const limit = args.limit ?? 50;
@@ -482,7 +569,7 @@ async function listSessions(args) {
   };
 }
 
-function compactSessionForList(session) {
+function compactSessionForList(session: any): any {
   return {
     sessionId: session.sessionId,
     providerSessionId: session.providerSessionId ?? null,
@@ -502,7 +589,11 @@ function compactSessionForList(session) {
   };
 }
 
-async function maybeListNativeSessions({ args, config, registry }) {
+async function maybeListNativeSessions({ args, config, registry }: {
+  args: ListSessionsArgs;
+  config: any;
+  registry: any;
+}): Promise<{ sessions: any[]; meta: any }> {
   if (config.safety.launchExternalAgents !== true) {
     return { sessions: [], meta: { attempted: false, reason: "launch_external_agents_disabled" } };
   }
@@ -520,8 +611,8 @@ async function maybeListNativeSessions({ args, config, registry }) {
     return { sessions: [], meta: { attempted: false, reason: "no_native_acp_agent_available" } };
   }
 
-  const sessions = [];
-  const agents = [];
+  const sessions: any[] = [];
+  const agents: any[] = [];
   const results = await Promise.allSettled(acpAgents.map((agent) => listAcpNativeSessions({
     selectedAgent: agent,
     worktree: args.worktree ?? null,
@@ -563,7 +654,11 @@ async function maybeListNativeSessions({ args, config, registry }) {
   };
 }
 
-async function listAcpNativeSessions({ selectedAgent, worktree, env }) {
+async function listAcpNativeSessions({ selectedAgent, worktree, env }: {
+  selectedAgent: any;
+  worktree: string | null;
+  env: Record<string, string | undefined>;
+}): Promise<{ supported: boolean; sessions: any[]; pages: number; nextCursor: string | null }> {
   const cwd = worktree ?? process.cwd();
   const launchTarget = resolveAcpLaunchTarget(selectedAgent.acp, selectedAgent, cwd);
   if (!launchTarget) throw new Error(`No ACP adapter is available for ${selectedAgent.id}.`);
@@ -589,11 +684,11 @@ async function listAcpNativeSessions({ selectedAgent, worktree, env }) {
     const supported = Boolean(initialize?.agentCapabilities?.sessionCapabilities?.list);
     if (!supported) return { supported: false, sessions: [], pages: 0, nextCursor: null };
 
-    const sessions = [];
-    let cursor = null;
+    const sessions: any[] = [];
+    let cursor: string | null = null;
     let pages = 0;
     do {
-      const params = {};
+      const params: any = {};
       if (worktree) params.cwd = worktree;
       if (cursor) params.cursor = cursor;
       const page = await client.request("session/list", params);
@@ -607,15 +702,20 @@ async function listAcpNativeSessions({ selectedAgent, worktree, env }) {
   }
 }
 
-function mapNativeSessions({ nativeSessions, registry, args, agentId }) {
-  const localByProvider = new Map();
+function mapNativeSessions({ nativeSessions, registry, args, agentId }: {
+  nativeSessions: any[];
+  registry: any;
+  args: ListSessionsArgs;
+  agentId: string;
+}): any[] {
+  const localByProvider = new Map<string, any>();
   for (const session of Object.values(registry.sessions)) {
     if (isPlainObject(session) && session.providerSessionId) {
       localByProvider.set(session.providerSessionId, session);
     }
   }
 
-  const result = [];
+  const result: any[] = [];
   for (const nativeSession of nativeSessions) {
     if (!isPlainObject(nativeSession) || typeof nativeSession.sessionId !== "string") continue;
     const providerSessionId = nativeSession.sessionId;
@@ -657,8 +757,12 @@ function mapNativeSessions({ nativeSessions, registry, args, agentId }) {
   return result;
 }
 
-function mergeSessionLists({ localSessions, nativeSessions, limit }) {
-  const byId = new Map();
+function mergeSessionLists({ localSessions, nativeSessions, limit }: {
+  localSessions: any[];
+  nativeSessions: any[];
+  limit: number;
+}): any[] {
+  const byId = new Map<string, any>();
   for (const session of [...localSessions, ...nativeSessions]) {
     if (!session?.sessionId) continue;
     byId.set(session.sessionId, { ...(byId.get(session.sessionId) ?? {}), ...session });
@@ -668,11 +772,11 @@ function mergeSessionLists({ localSessions, nativeSessions, limit }) {
     .slice(0, limit);
 }
 
-function createNativeDispatcherSessionId(agentId, providerSessionId) {
+function createNativeDispatcherSessionId(agentId: string, providerSessionId: string): string {
   return `sess_native_${agentId}_${encodeBase64Url(providerSessionId)}`;
 }
 
-function parseNativeDispatcherSessionId(sessionId) {
+function parseNativeDispatcherSessionId(sessionId: string): { agentId: string; providerSessionId: string } | null {
   const match = /^sess_native_([^_]+)_(.+)$/.exec(String(sessionId ?? ""));
   if (!match) return null;
   const providerSessionId = decodeBase64Url(match[2]);
@@ -683,7 +787,7 @@ function parseNativeDispatcherSessionId(sessionId) {
   };
 }
 
-function encodeBase64Url(value) {
+function encodeBase64Url(value: string): string {
   return Buffer.from(String(value), "utf8")
     .toString("base64")
     .replaceAll("+", "-")
@@ -691,7 +795,7 @@ function encodeBase64Url(value) {
     .replace(/=+$/u, "");
 }
 
-function decodeBase64Url(value) {
+function decodeBase64Url(value: string): string | null {
   try {
     const base64 = String(value).replaceAll("-", "+").replaceAll("_", "/");
     const padded = `${base64}${"=".repeat((4 - (base64.length % 4)) % 4)}`;
@@ -701,7 +805,7 @@ function decodeBase64Url(value) {
   }
 }
 
-async function continueSession(args) {
+async function continueSession(args: ContinueSessionArgs): Promise<any> {
   const registry = await readRegistry();
   let session = registry.sessions[args.sessionId];
   if (!session) {
@@ -723,18 +827,18 @@ async function continueSession(args) {
       worktree: args.worktree,
       createdAt: now,
       updatedAt: now,
-      lastJobId: null,
+      lastJobId: undefined,
       source: "agent_native",
       canContinue: true
-    };
+    } as any;
     registry.sessions[session.sessionId] = session;
     await writeRegistry(registry);
   }
   return createJob({
     agent: args.agent,
     sessionId: args.sessionId,
-    prompt: args.prompt,
-    worktree: args.worktree,
+    prompt: args.prompt ?? "",
+    worktree: args.worktree ?? "",
     async: args.async,
     launchExternalAgents: args.launchExternalAgents,
     inheritEnvironment: args.inheritEnvironment,
@@ -745,7 +849,7 @@ async function continueSession(args) {
   });
 }
 
-async function archiveSession(args) {
+async function archiveSession(args: ArchiveSessionArgs): Promise<any> {
   const registry = await readRegistry();
   const session = registry.sessions[args.sessionId];
   if (!session) return { sessionId: args.sessionId, status: "not_found" };
@@ -755,9 +859,9 @@ async function archiveSession(args) {
   return { sessionId: session.sessionId, status: session.status };
 }
 
-function findActiveWorktreeJob(registry, worktree, permissionProfile) {
+function findActiveWorktreeJob(registry: any, worktree: string, permissionProfile: string): any | null {
   if (permissionProfile === "plan") return null;
-  return Object.values(registry.jobs).find((job) => (
+  return (Object.values(registry.jobs) as any[]).find((job) => (
     job.worktree === worktree
     && job.permissionProfile !== "plan"
     && ACTIVE_JOB_STATUSES.has(job.status)

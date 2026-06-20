@@ -1,8 +1,7 @@
 #!/usr/bin/env node
+import { startMcpServer } from "../server.js";
 
-import { startMcpServer } from "../mcp/server.mjs";
-
-startMcpServer().catch((error) => {
+startMcpServer().catch((error: Error) => {
   process.stderr.write(`acp-router: ${error.message}\n`);
   process.exit(1);
 });

@@ -1,14 +1,16 @@
 #!/usr/bin/env node
 
+import { fileURLToPath } from "node:url";
+
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 
-import { SERVER_NAME, SERVER_VERSION } from "./constants.mjs";
-import { toToolResult, safeEnv } from "./utils.mjs";
-import { readConfig } from "./storage.mjs";
-import { discoverAgents, configureDispatcher } from "./agents.mjs";
-import { probeAgentModels } from "./acp-client.mjs";
+import { SERVER_NAME, SERVER_VERSION } from "./constants.js";
+import { toToolResult, safeEnv } from "./utils.js";
+import { readConfig } from "./storage.js";
+import { discoverAgents, configureDispatcher } from "./agents.js";
+import { probeAgentModels } from "./acp-client.js";
 import {
   createJob,
   listJobs,
@@ -18,37 +20,38 @@ import {
   listSessions,
   continueSession,
   archiveSession
-} from "./jobs.mjs";
+} from "./jobs.js";
 
-async function startMcpServer() {
+async function startMcpServer(): Promise<void> {
   const server = new McpServer({ name: SERVER_NAME, version: SERVER_VERSION });
+  const registerTool = server.tool.bind(server) as any;
 
-  server.tool(
+  registerTool(
     "discover_agents",
     "Discover locally installed coding agents and their ACP adapter status. Returns transport, ACP availability, registry metadata, and install hints.",
     {
       refresh: z.boolean().optional().describe("Force refresh the ACP registry cache"),
       includeNotInstalled: z.boolean().optional().describe("Include agents that are not currently installed")
     },
-    async (args) => toToolResult(await discoverAgents({
+    async (args: any) => toToolResult(await discoverAgents({
       refresh: args.refresh === true,
       includeNotInstalled: args.includeNotInstalled !== false
     }))
   );
 
-  server.tool(
+  registerTool(
     "get_agent_models",
     "Probe an ACP agent for its available model list. Starts a temporary ACP session, reads config options, and returns model choices. Use this before run_agent to discover valid model ids.",
     {
       agent: z.string().describe("Agent id to probe (e.g. opencode, claude, codex)"),
       worktree: z.string().optional().describe("Worktree path for the ACP session (defaults to cwd)")
     },
-    async (args) => {
+    async (args: any) => {
       const config = await readConfig();
       const { agents } = await discoverAgents({ includeNotInstalled: false });
-      const selectedAgent = agents.find((a) => a.id === args.agent);
+      const selectedAgent = agents.find((a: any) => a.id === args.agent);
       if (!selectedAgent) {
-        return toToolResult({ error: "agent_not_found", agentId: args.agent, availableAgents: agents.map((a) => a.id) });
+        return toToolResult({ error: "agent_not_found", agentId: args.agent, availableAgents: agents.map((a: any) => a.id) });
       }
       if (!selectedAgent.acp?.available) {
         return toToolResult({ error: "acp_not_available", agentId: args.agent });
@@ -61,12 +64,12 @@ async function startMcpServer() {
         });
         return toToolResult(result);
       } catch (error) {
-        return toToolResult({ error: "probe_failed", agentId: args.agent, message: error.message });
+        return toToolResult({ error: "probe_failed", agentId: args.agent, message: (error as Error).message });
       }
     }
   );
 
-  server.tool(
+  registerTool(
     "manage_config",
     "Get or set Agent Router configuration including default agent, per-mode defaults, disabled agents, and safety policy.",
     {
@@ -83,7 +86,7 @@ async function startMcpServer() {
       inheritEnvironment: z.boolean().optional().describe("Inherit parent process environment for child agents"),
       modeDefaults: z.record(z.string(), z.unknown()).optional().describe("Per-mode default agent id mapping")
     },
-    async (args) => {
+    async (args: any) => {
       if (args.action === "get") {
         return toToolResult({ config: await readConfig() });
       }
@@ -91,7 +94,7 @@ async function startMcpServer() {
     }
   );
 
-  server.tool(
+  registerTool(
     "run_agent",
     "Run a coding agent in an isolated worktree. Requires an absolute worktree path. Supports sync and async execution. ACP-only — CLI fallback is not supported.",
     {
@@ -109,10 +112,10 @@ async function startMcpServer() {
       inheritEnvironment: z.boolean().optional().describe("Override config for inheriting parent environment"),
       metadata: z.record(z.string(), z.unknown()).optional().describe("Arbitrary metadata to attach to the job")
     },
-    async (args) => toToolResult(await createJob(args))
+    async (args: any) => toToolResult(await createJob(args))
   );
 
-  server.tool(
+  registerTool(
     "list_jobs",
     "List Agent Router jobs from the local registry with optional filters.",
     {
@@ -121,19 +124,19 @@ async function startMcpServer() {
       worktree: z.string().nullable().optional().describe("Filter by worktree path"),
       limit: z.number().optional().describe("Maximum number of jobs to return")
     },
-    async (args) => toToolResult(await listJobs(args))
+    async (args: any) => toToolResult(await listJobs(args))
   );
 
-  server.tool(
+  registerTool(
     "get_job",
     "Get an Agent Router job by id.",
     {
       jobId: z.string().describe("Job id to look up")
     },
-    async (args) => toToolResult(await getJob(args))
+    async (args: any) => toToolResult(await getJob(args))
   );
 
-  server.tool(
+  registerTool(
     "tail_job_events",
     "Return newly recorded Agent Router job events from the JSONL event log for polling-style progress updates.",
     {
@@ -143,20 +146,20 @@ async function startMcpServer() {
       includeLogTail: z.boolean().optional().describe("Include a tail of the raw log file"),
       logTailBytes: z.number().optional().describe("Number of bytes to include in the log tail")
     },
-    async (args) => toToolResult(await tailJobEvents(args))
+    async (args: any) => toToolResult(await tailJobEvents(args))
   );
 
-  server.tool(
+  registerTool(
     "cancel_job",
     "Cancel an Agent Router job and terminate an active child process when the current MCP server owns it.",
     {
       jobId: z.string().describe("Job id to cancel"),
       reason: z.string().optional().describe("Reason for cancellation")
     },
-    async (args) => toToolResult(await cancelJob(args))
+    async (args: any) => toToolResult(await cancelJob(args))
   );
 
-  server.tool(
+  registerTool(
     "manage_sessions",
     "List, continue, or archive Agent Router sessions. Use action='list' to enumerate sessions, action='continue' to resume a session with a new prompt, or action='archive' to mark a session as archived.",
     {
@@ -172,7 +175,7 @@ async function startMcpServer() {
       inheritEnvironment: z.boolean().optional().describe("Override config for inheriting parent environment (continue)"),
       timeoutSec: z.number().optional().describe("Job timeout in seconds (continue)")
     },
-    async (args) => {
+    async (args: any) => {
       if (args.action === "list") {
         return toToolResult(await listSessions({
           includeArchived: args.includeArchived,
@@ -223,7 +226,7 @@ async function startMcpServer() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
 
-  const shutdown = async () => {
+  const shutdown = async (): Promise<void> => {
     try {
       await server.close();
     } catch {
@@ -237,9 +240,8 @@ async function startMcpServer() {
 
 export { startMcpServer };
 
-import { fileURLToPath } from "node:url";
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
-  startMcpServer().catch((err) => {
+  startMcpServer().catch((err: Error) => {
     process.stderr.write(`acp-router: ${err.message}\n`);
     process.exit(1);
   });

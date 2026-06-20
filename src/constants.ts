@@ -1,6 +1,32 @@
 import os from "node:os";
 import path from "node:path";
 
+export type PermissionProfile = "plan" | "acceptEdits" | "bypassPermissions";
+
+export interface AcpAdapterSpec {
+  executable: string;
+  versionArgs: string[];
+  adapterStatus: string;
+  label: string;
+  buildArgsKey: string;
+  buildArgs: (args: { worktree: string }) => string[];
+}
+
+export interface BuiltInAgent {
+  id: string;
+  displayName: string;
+  executable: string;
+  versionArgs: string[];
+  transport: string;
+  command: string;
+  acp?: AcpAdapterSpec;
+  capabilities: string[];
+  source: string[];
+  notes: string[];
+}
+
+export type AcpModeMap = Record<string, Record<PermissionProfile, string>>;
+
 const SERVER_NAME = "acp-router";
 const SERVER_VERSION = "0.8.0";
 const DATA_DIR = process.env.ACP_ROUTER_DATA_DIR
@@ -18,7 +44,7 @@ const TERMINAL_JOB_STATUSES = new Set(["completed", "failed", "cancelled", "time
 
 const MAX_RECURSION_DEPTH = 3;
 
-const ACP_MODE_MAP = {
+const ACP_MODE_MAP: AcpModeMap = {
   claude: {
     plan: "plan",
     acceptEdits: "acceptEdits",
@@ -36,7 +62,7 @@ const ACP_MODE_MAP = {
   }
 };
 
-const BUILT_IN_AGENTS = [
+const BUILT_IN_AGENTS: BuiltInAgent[] = [
   {
     id: "opencode",
     displayName: "OpenCode",
@@ -107,7 +133,7 @@ const BUILT_IN_AGENTS = [
   }
 ];
 
-const AGENT_ENV_ALLOWLIST = [
+const AGENT_ENV_ALLOWLIST: readonly string[] = [
   "ANTHROPIC_API_KEY",
   "ANTHROPIC_AUTH_TOKEN",
   "ANTHROPIC_BASE_URL",
@@ -115,7 +141,7 @@ const AGENT_ENV_ALLOWLIST = [
   "CLAUDE_CONFIG_DIR"
 ];
 
-const AGENT_ERROR_PATTERNS = [
+const AGENT_ERROR_PATTERNS: readonly RegExp[] = [
   /insufficient balance/i,
   /rate[_ -]?limit/i,
   /rate limit/i,

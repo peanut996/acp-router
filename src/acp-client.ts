@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 
 import {
   SERVER_NAME,
@@ -7,7 +7,7 @@ import {
   ACP_STARTUP_DELAY_MS,
   AGENT_ERROR_PATTERNS,
   AGENT_ERROR_KEY_PATTERN
-} from "./constants.mjs";
+} from "./constants.js";
 import {
   safeEnv,
   sleep,
@@ -15,19 +15,154 @@ import {
   isPlainObject,
   uniqueStrings,
   buildAcpProcessClosedEvent
-} from "./utils.mjs";
-import { appendJsonl } from "./storage.mjs";
-import { resolveAcpLaunchTarget, collectWorktreeState } from "./agents.mjs";
+} from "./utils.js";
+import { appendJsonl } from "./storage.js";
+import { resolveAcpLaunchTarget, collectWorktreeState } from "./agents.js";
+import type { AcpAdapterSpec, EnrichedAgent, WorktreeState } from "./agents.js";
+
+type PermissionProfile = "bypassPermissions" | "acceptEdits" | "plan";
+
+interface AcpLogEvent {
+  type: string;
+  timestamp: string;
+  message: string;
+  [key: string]: any;
+}
+
+interface AcpClientConstructorArgs {
+  command: string;
+  args: string[];
+  cwd: string;
+  timeoutMs: number;
+  env?: NodeJS.ProcessEnv;
+  permissionProfile?: PermissionProfile;
+  onEvent?: (event: AcpLogEvent) => void;
+  onProcessStart?: (child: ChildProcess) => void | Promise<void>;
+}
+
+interface PendingRequest {
+  method: string;
+  resolve: (value: any) => void;
+  reject: (error: Error) => void;
+  timer: NodeJS.Timeout;
+}
+
+interface AcpJsonRpcRequest {
+  jsonrpc: "2.0";
+  id: number;
+  method: string;
+  params?: any;
+}
+
+interface AcpJsonRpcResponse {
+  jsonrpc: "2.0";
+  id: number;
+  result?: any;
+  error?: { code: number; message: string };
+}
+
+interface AcpSessionUpdate {
+  sessionUpdate?: string;
+  content?: { text?: string };
+  title?: string;
+  status?: string;
+  toolCallId?: string;
+  availableCommands?: any[];
+}
+
+interface AcpConfigOption {
+  id: string | null;
+  title: string | null;
+  category: string | null;
+  type: string | null;
+  description: string | null;
+  currentValue: string | number | boolean | null;
+  options: AcpConfigChoice[];
+}
+
+interface AcpConfigChoice {
+  value: string;
+  label: string;
+  description: string | null;
+}
+
+interface AcpModelOption {
+  configId: string | null;
+  value: string;
+  label: string;
+  description: string | null;
+}
+
+interface SessionUpdateEvent {
+  type: string;
+  timestamp: string;
+  message: string;
+  params: any;
+}
+
+interface InitializeSummary {
+  protocolVersion: any;
+  agentInfo: any;
+  agentCapabilities: {
+    loadSession: boolean;
+    sessionCapabilities: string[];
+  };
+  authMethods: { id: any; name: any }[];
+}
+
+interface RunAcpStdioJobArgs {
+  args: { worktree: string; prompt: string; model?: string | null; collectDiff?: boolean };
+  job: {
+    jobId: string;
+    sessionId: string;
+    logPath: string;
+    permissionProfile?: PermissionProfile;
+    worktreeState: WorktreeState;
+  };
+  session: { providerSessionId: string | null };
+  selectedAgent: EnrichedAgent;
+  timeoutSec: number;
+  agentEnv?: NodeJS.ProcessEnv;
+  controller?: any;
+}
+
+interface ProbeAgentModelsArgs {
+  selectedAgent: EnrichedAgent;
+  worktree?: string;
+  env?: NodeJS.ProcessEnv;
+  timeoutMs?: number;
+}
+
+interface ProbeAgentModelsResult {
+  agentId: string;
+  models: AcpModelOption[];
+  configOptions: AcpConfigOption[];
+}
 
 class AcpStdioClient {
-  constructor({ command, args, cwd, timeoutMs, env, permissionProfile, onEvent, onProcessStart }) {
+  command: string;
+  args: string[];
+  cwd: string;
+  timeoutMs: number;
+  env: NodeJS.ProcessEnv;
+  permissionProfile: PermissionProfile;
+  onEvent: (event: AcpLogEvent) => void;
+  onProcessStart: ((child: ChildProcess) => void | Promise<void>) | undefined;
+  nextId: number;
+  pending: Map<number, PendingRequest>;
+  stdoutBuffer: string;
+  logEvents: AcpLogEvent[];
+  child: ChildProcess | null;
+  startError: Error | null;
+
+  constructor({ command, args, cwd, timeoutMs, env, permissionProfile, onEvent, onProcessStart }: AcpClientConstructorArgs) {
     this.command = command;
     this.args = args;
     this.cwd = cwd;
     this.timeoutMs = timeoutMs;
     this.env = env ?? safeEnv();
     this.permissionProfile = permissionProfile ?? "bypassPermissions";
-    this.onEvent = onEvent;
+    this.onEvent = onEvent ?? (() => {});
     this.onProcessStart = onProcessStart;
     this.nextId = 1;
     this.pending = new Map();
@@ -37,7 +172,7 @@ class AcpStdioClient {
     this.startError = null;
   }
 
-  async start() {
+  async start(): Promise<void> {
     const currentDepth = Number.parseInt(process.env.ACP_ROUTER_DEPTH ?? "0", 10) || 0;
     const childEnv = {
       ...this.env,
@@ -48,10 +183,10 @@ class AcpStdioClient {
       stdio: ["pipe", "pipe", "pipe"],
       env: childEnv
     });
-    this.child.stdout.setEncoding("utf8");
-    this.child.stderr.setEncoding("utf8");
+    this.child.stdout!.setEncoding("utf8");
+    this.child.stderr!.setEncoding("utf8");
     if (typeof this.onProcessStart === "function") {
-      await Promise.resolve(this.onProcessStart(this.child)).catch((error) => {
+      await Promise.resolve(this.onProcessStart(this.child)).catch((error: any) => {
         this.logEvents.push({
           type: "process_record_error",
           timestamp: new Date().toISOString(),
@@ -59,20 +194,20 @@ class AcpStdioClient {
         });
       });
     }
-    this.child.stdout.on("data", (chunk) => this.handleStdout(chunk));
-    this.child.stderr.on("data", (chunk) => this.handleStderr(chunk));
-    this.child.on("error", (error) => {
+    this.child.stdout!.on("data", (chunk: string) => this.handleStdout(chunk));
+    this.child.stderr!.on("data", (chunk: string) => this.handleStderr(chunk));
+    this.child.on("error", (error: Error) => {
       this.startError = error;
       this.rejectPending(error);
     });
-    this.child.on("exit", (code, signal) => this.rejectPending(new Error(`ACP process exited with code=${code} signal=${signal}`)));
+    this.child.on("exit", (code: number | null, signal: NodeJS.Signals | null) => this.rejectPending(new Error(`ACP process exited with code=${code} signal=${signal}`)));
     await sleep(ACP_STARTUP_DELAY_MS);
     if (this.startError) throw this.startError;
   }
 
-  request(method, params) {
+  request(method: string, params?: any): Promise<any> {
     const id = this.nextId++;
-    const payload = { jsonrpc: "2.0", id, method, params };
+    const payload: AcpJsonRpcRequest = { jsonrpc: "2.0", id, method, params };
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
@@ -85,7 +220,7 @@ class AcpStdioClient {
           stderrTail
             ? `ACP request timed out: ${method}. Recent stderr:\n${stderrTail}`
             : `ACP request timed out: ${method} (no stderr output).`
-        );
+        ) as Error & { code?: string };
         error.code = "timeout";
         reject(error);
       }, this.timeoutMs);
@@ -94,22 +229,22 @@ class AcpStdioClient {
     });
   }
 
-  respond(id, result) {
+  respond(id: number, result: any): void {
     this.write({ jsonrpc: "2.0", id, result });
   }
 
-  respondError(id, code, message) {
+  respondError(id: number, code: number, message: string): void {
     this.write({ jsonrpc: "2.0", id, error: { code, message } });
   }
 
-  write(payload) {
-    if (!this.child || !this.child.stdin.writable) {
+  write(payload: any): void {
+    if (!this.child || !this.child.stdin!.writable) {
       throw new Error("ACP process is not writable.");
     }
-    this.child.stdin.write(`${JSON.stringify(payload)}\n`);
+    this.child.stdin!.write(`${JSON.stringify(payload)}\n`);
   }
 
-  handleStdout(chunk) {
+  handleStdout(chunk: string): void {
     this.stdoutBuffer += chunk;
     while (true) {
       const newlineIndex = this.stdoutBuffer.indexOf("\n");
@@ -121,8 +256,8 @@ class AcpStdioClient {
     }
   }
 
-  handleMessageLine(line) {
-    let message;
+  handleMessageLine(line: string): void {
+    let message: any;
     try {
       message = JSON.parse(line);
     } catch {
@@ -154,7 +289,7 @@ class AcpStdioClient {
     }
   }
 
-  handleClientRequest(message) {
+  handleClientRequest(message: any): void {
     if (message.method === "session/request_permission") {
       const outcome = this.resolvePermissionOutcome(message.params);
       this.logEvents.push({
@@ -171,13 +306,13 @@ class AcpStdioClient {
     this.respondError(message.id, -32601, `Unsupported client method: ${message.method}`);
   }
 
-  resolvePermissionOutcome(params) {
+  resolvePermissionOutcome(params: any): "approved" | "cancelled" {
     switch (this.permissionProfile) {
       case "bypassPermissions":
         return "approved";
       case "acceptEdits": {
         const perms = params?.permissions ?? [];
-        const hasNonFilePermission = perms.some((p) => p.type !== "file_edit" && p.type !== "write");
+        const hasNonFilePermission = perms.some((p: any) => p.type !== "file_edit" && p.type !== "write");
         if (hasNonFilePermission) return "cancelled";
         return "approved";
       }
@@ -188,14 +323,14 @@ class AcpStdioClient {
     }
   }
 
-  handleNotification(message) {
+  handleNotification(message: any): void {
     const event = normalizeAcpNotification(message);
     this.onEvent(event);
   }
 
-  handleStderr(chunk) {
+  handleStderr(chunk: string): void {
     for (const line of chunk.split(/\r?\n/).filter(Boolean)) {
-      const event = {
+      const event: AcpLogEvent = {
         type: "acp_stderr",
         timestamp: new Date().toISOString(),
         message: preview(line, 500)
@@ -206,13 +341,13 @@ class AcpStdioClient {
     }
   }
 
-  drainLogEvents() {
+  drainLogEvents(): AcpLogEvent[] {
     const events = this.logEvents;
     this.logEvents = [];
     return events;
   }
 
-  rejectPending(error) {
+  rejectPending(error: Error): void {
     for (const pending of this.pending.values()) {
       clearTimeout(pending.timer);
       pending.reject(error);
@@ -220,24 +355,25 @@ class AcpStdioClient {
     this.pending.clear();
   }
 
-  dispose() {
+  dispose(): void {
     for (const pending of this.pending.values()) clearTimeout(pending.timer);
     this.pending.clear();
     if (this.child && !this.child.killed) {
       this.child.kill("SIGTERM");
-      setTimeout(() => {
+      const timer = setTimeout(() => {
         if (this.child && !this.child.killed) {
           this.child.kill("SIGKILL");
         }
-      }, 1000).unref();
+      }, 1000);
+      (timer as NodeJS.Timeout).unref?.();
     }
   }
 }
 
-function normalizeAcpNotification(message) {
+function normalizeAcpNotification(message: any): SessionUpdateEvent {
   if (message.method === "session/update") {
-    const update = message.params?.update ?? {};
-    const event = {
+    const update: AcpSessionUpdate = message.params?.update ?? {};
+    const event: SessionUpdateEvent = {
       type: `acp_${update.sessionUpdate ?? "session_update"}`,
       timestamp: new Date().toISOString(),
       message: describeSessionUpdate(update),
@@ -253,7 +389,7 @@ function normalizeAcpNotification(message) {
   };
 }
 
-function describeSessionUpdate(update) {
+function describeSessionUpdate(update: AcpSessionUpdate): string {
   if (update.sessionUpdate === "agent_message_chunk") {
     return preview(update.content?.text ?? "", 300);
   }
@@ -269,7 +405,7 @@ function describeSessionUpdate(update) {
   return update.sessionUpdate ?? "session update";
 }
 
-function summarizeInitializeResult(result) {
+function summarizeInitializeResult(result: any): InitializeSummary {
   return {
     protocolVersion: result.protocolVersion,
     agentInfo: result.agentInfo ?? null,
@@ -277,14 +413,14 @@ function summarizeInitializeResult(result) {
       loadSession: Boolean(result.agentCapabilities?.loadSession),
       sessionCapabilities: Object.keys(result.agentCapabilities?.sessionCapabilities ?? {})
     },
-    authMethods: (result.authMethods ?? []).map((method) => ({ id: method.id, name: method.name }))
+    authMethods: (result.authMethods ?? []).map((method: any) => ({ id: method.id, name: method.name }))
   };
 }
 
-function summarizeAcpConfigOptions(configOptions) {
+function summarizeAcpConfigOptions(configOptions: any): AcpConfigOption[] {
   if (!Array.isArray(configOptions)) return [];
   return configOptions
-    .map((option) => {
+    .map((option: any) => {
       const id = option.id ?? option.configId ?? null;
       const title = option.title ?? option.name ?? option.label ?? id;
       const category = option.category ?? null;
@@ -303,10 +439,10 @@ function summarizeAcpConfigOptions(configOptions) {
     .filter((option) => option.id || option.category || option.options.length > 0);
 }
 
-function summarizeConfigChoices(choices) {
+function summarizeConfigChoices(choices: any): AcpConfigChoice[] {
   if (!Array.isArray(choices)) return [];
-  return choices.map((choice) => {
-    if (typeof choice === "string") return { value: choice, label: choice };
+  return choices.map((choice: any): AcpConfigChoice | null => {
+    if (typeof choice === "string") return { value: choice, label: choice, description: null };
     if (!isPlainObject(choice)) return null;
     const value = choice.value ?? choice.id ?? choice.name ?? choice.label ?? choice.title;
     const label = choice.label ?? choice.title ?? choice.name ?? choice.value ?? choice.id;
@@ -316,15 +452,15 @@ function summarizeConfigChoices(choices) {
       label: typeof label === "string" && label ? label : value,
       description: choice.description ? preview(choice.description, 300) : null
     };
-  }).filter(Boolean);
+  }).filter((choice): choice is AcpConfigChoice => choice !== null);
 }
 
-function summarizeConfigValue(value) {
+function summarizeConfigValue(value: any): string | number | boolean | null {
   if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") return value;
   return null;
 }
 
-function extractModelOptions(configOptions) {
+function extractModelOptions(configOptions: AcpConfigOption[]): AcpModelOption[] {
   return configOptions
     .filter((option) => (
       option.category === "model"
@@ -339,7 +475,7 @@ function extractModelOptions(configOptions) {
     })));
 }
 
-function buildDispatchPrompt(prompt) {
+function buildDispatchPrompt(prompt: string): string {
   return [
     prompt,
     "",
@@ -350,7 +486,7 @@ function buildDispatchPrompt(prompt) {
   ].join("\n");
 }
 
-function extractAgentText(events) {
+function extractAgentText(events: AcpLogEvent[]): string {
   const chunks = events
     .filter((event) => event.type === "acp_agent_message_chunk")
     .map((event) => event.params?.update?.content?.text)
@@ -358,8 +494,8 @@ function extractAgentText(events) {
   return chunks.join("").trim();
 }
 
-function extractAgentErrors(events) {
-  const candidates = [];
+function extractAgentErrors(events: AcpLogEvent[]): string[] {
+  const candidates: any[] = [];
   for (const event of events) {
     candidates.push(event.message);
     candidates.push(event.errorMessage);
@@ -381,12 +517,12 @@ function extractAgentErrors(events) {
   ).slice(0, 10);
 }
 
-function collectDiagnosticStrings(value, depth = 0) {
+function collectDiagnosticStrings(value: any, depth = 0): string[] {
   if (depth > 5 || value == null) return [];
   if (typeof value === "string") return [value];
   if (Array.isArray(value)) return value.flatMap((item) => collectDiagnosticStrings(item, depth + 1));
   if (typeof value !== "object") return [];
-  const values = [];
+  const values: string[] = [];
   for (const [key, child] of Object.entries(value)) {
     if (
       AGENT_ERROR_KEY_PATTERN.test(key)
@@ -399,7 +535,7 @@ function collectDiagnosticStrings(value, depth = 0) {
   return values;
 }
 
-function buildFailureReason(adapterLabel, error, agentErrors) {
+function buildFailureReason(adapterLabel: string, error: Error & { code?: string }, agentErrors: string[]): string {
   if (agentErrors.length > 0) {
     const suffix = error.code === "timeout" ? " (request timed out after agent error)" : "";
     return `${adapterLabel} failed: ${agentErrors.join("; ")}${suffix}`;
@@ -407,27 +543,32 @@ function buildFailureReason(adapterLabel, error, agentErrors) {
   return `${adapterLabel} failed: ${error.message}`;
 }
 
-function diffChangedFiles(beforeState, afterState) {
-  const before = new Set(Array.isArray(beforeState?.preExistingChangedFiles) ? beforeState.preExistingChangedFiles : []);
-  const after = Array.isArray(afterState?.preExistingChangedFiles) ? afterState.preExistingChangedFiles : [];
+function diffChangedFiles(beforeState: WorktreeState | null, afterState: WorktreeState | { skipped: boolean; reason: string }): string[] {
+  const before = new Set(Array.isArray(beforeState?.preExistingChangedFiles) ? beforeState!.preExistingChangedFiles : []);
+  const afterFiles = (afterState as WorktreeState)?.preExistingChangedFiles;
+  const after = Array.isArray(afterFiles) ? afterFiles : [];
   const introduced = after.filter((file) => !before.has(file));
   return introduced.length > 0 ? introduced : after;
 }
 
-async function runAcpStdioJob({ args, job, session, selectedAgent, timeoutSec, agentEnv, controller }) {
-  const acpSpec = selectedAgent.acp;
+async function runAcpStdioJob({ args, job, session, selectedAgent, timeoutSec, agentEnv, controller }: RunAcpStdioJobArgs): Promise<{
+  events: AcpLogEvent[];
+  sessionPatch: any;
+  jobPatch: any;
+}> {
+  const acpSpec: AcpAdapterSpec | null = selectedAgent.acp;
   const launchTarget = resolveAcpLaunchTarget(acpSpec, selectedAgent, args.worktree);
   if (!launchTarget) throw new Error(`No ACP adapter is available for ${selectedAgent.id}.`);
-  const adapterLabel = acpSpec.label ?? `${selectedAgent.displayName} ACP`;
-  const adapterStatus = acpSpec.adapterStatus ?? `${selectedAgent.id}_acp`;
-  const permissionProfile = job.permissionProfile ?? "bypassPermissions";
-  const events = [];
+  const adapterLabel = acpSpec?.label ?? `${selectedAgent.displayName} ACP`;
+  const adapterStatus = acpSpec?.adapterStatus ?? `${selectedAgent.id}_acp`;
+  const permissionProfile: PermissionProfile = job.permissionProfile ?? "bypassPermissions";
+  const events: AcpLogEvent[] = [];
   const startedAt = Date.now();
-  let providerSessionId = session.providerSessionId ?? null;
-  let agentConfigOptions = [];
-  let availableModels = [];
-  let writeChain = Promise.resolve();
-  const streamEvent = (event) => {
+  let providerSessionId: string | null = session.providerSessionId ?? null;
+  let agentConfigOptions: AcpConfigOption[] = [];
+  let availableModels: AcpModelOption[] = [];
+  let writeChain: Promise<void> = Promise.resolve();
+  const streamEvent = (event: AcpLogEvent): void => {
     events.push(event);
     writeChain = writeChain.then(() => appendJsonl(job.logPath, [{
       ...event,
@@ -506,7 +647,7 @@ async function runAcpStdioJob({ args, job, session, selectedAgent, timeoutSec, a
     }
 
     const modeOption = agentConfigOptions.find((o) => o.category === "mode" || o.id === "mode");
-    const targetMode = ACP_MODE_MAP[selectedAgent.id]?.[permissionProfile];
+    const targetMode = (ACP_MODE_MAP as Record<string, Record<string, string>>)[selectedAgent.id]?.[permissionProfile];
     if (modeOption && targetMode) {
       const modeValueExists = modeOption.options.some((o) => o.value === targetMode);
       if (modeValueExists) {
@@ -637,7 +778,7 @@ async function runAcpStdioJob({ args, job, session, selectedAgent, timeoutSec, a
         risks: planRisks
       }
     };
-  } catch (error) {
+  } catch (error: any) {
     const failedAt = new Date().toISOString();
     for (const logEvent of client.drainLogEvents()) streamEvent(logEvent);
     const collectedEvents = [...events];
@@ -691,7 +832,7 @@ async function runAcpStdioJob({ args, job, session, selectedAgent, timeoutSec, a
   }
 }
 
-async function probeAgentModels({ selectedAgent, worktree, env, timeoutMs }) {
+async function probeAgentModels({ selectedAgent, worktree, env, timeoutMs }: ProbeAgentModelsArgs): Promise<ProbeAgentModelsResult> {
   const cwd = worktree ?? process.cwd();
   const launchTarget = resolveAcpLaunchTarget(selectedAgent.acp, selectedAgent, cwd);
   if (!launchTarget) throw new Error(`No ACP adapter is available for ${selectedAgent.id}.`);
@@ -743,4 +884,22 @@ export {
   diffChangedFiles,
   runAcpStdioJob,
   probeAgentModels
+};
+
+export type {
+  PermissionProfile,
+  AcpLogEvent,
+  AcpClientConstructorArgs,
+  PendingRequest,
+  AcpJsonRpcRequest,
+  AcpJsonRpcResponse,
+  AcpSessionUpdate,
+  AcpConfigOption,
+  AcpConfigChoice,
+  AcpModelOption,
+  SessionUpdateEvent,
+  InitializeSummary,
+  RunAcpStdioJobArgs,
+  ProbeAgentModelsArgs,
+  ProbeAgentModelsResult
 };

@@ -1,11 +1,10 @@
 #!/usr/bin/env node
 
-import { createJob, getJob, tailJobEvents, listJobs, cancelJob, listSessions } from "../mcp/jobs.mjs";
-import { discoverAgents } from "../mcp/agents.mjs";
-import { configureDispatcher } from "../mcp/agents.mjs";
-import { readConfig } from "../mcp/storage.mjs";
-import { probeAgentModels } from "../mcp/acp-client.mjs";
-import { safeEnv } from "../mcp/utils.mjs";
+import { createJob, getJob, tailJobEvents, listJobs, cancelJob, listSessions } from "../jobs.js";
+import { discoverAgents, configureDispatcher } from "../agents.js";
+import { readConfig } from "../storage.js";
+import { probeAgentModels } from "../acp-client.js";
+import { safeEnv } from "../utils.js";
 
 const HELP = `acp-router CLI
 
@@ -25,8 +24,8 @@ Commands:
 Run "acp-router-cli <command> --help" for command-specific options.
 `;
 
-function parseArgs(argv) {
-  const args = {};
+function parseArgs(argv: string[]): Record<string, any> {
+  const args: Record<string, any> = {};
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg.startsWith("--")) {
@@ -46,11 +45,11 @@ function parseArgs(argv) {
   return args;
 }
 
-function printJson(obj) {
+function printJson(obj: any): void {
   process.stdout.write(JSON.stringify(obj, null, 2) + "\n");
 }
 
-async function cmdRun(args) {
+async function cmdRun(args: Record<string, any>): Promise<void> {
   if (args.help) {
     process.stdout.write(`acp-router-cli run -- Run a coding agent (sync, blocks until done)
 
@@ -104,7 +103,7 @@ Options:
   }
 }
 
-async function cmdAgents(args) {
+async function cmdAgents(args: Record<string, any>): Promise<void> {
   const result = await discoverAgents({
     refresh: args.refresh === true,
     includeNotInstalled: args["include-not-installed"] !== "false"
@@ -112,7 +111,7 @@ async function cmdAgents(args) {
   printJson(result);
 }
 
-async function cmdJobs(args) {
+async function cmdJobs(args: Record<string, any>): Promise<void> {
   const result = await listJobs({
     status: args.status,
     agent: args.agent,
@@ -122,7 +121,7 @@ async function cmdJobs(args) {
   printJson(result);
 }
 
-async function cmdJob(args) {
+async function cmdJob(args: Record<string, any>): Promise<void> {
   if (!args._ || !args._[0]) {
     process.stderr.write("Error: job id required\n");
     process.exit(1);
@@ -131,7 +130,7 @@ async function cmdJob(args) {
   printJson(result);
 }
 
-async function cmdTail(args) {
+async function cmdTail(args: Record<string, any>): Promise<void> {
   if (!args._ || !args._[0]) {
     process.stderr.write("Error: job id required\n");
     process.exit(1);
@@ -146,7 +145,7 @@ async function cmdTail(args) {
   printJson(result);
 }
 
-async function cmdCancel(args) {
+async function cmdCancel(args: Record<string, any>): Promise<void> {
   if (!args._ || !args._[0]) {
     process.stderr.write("Error: job id required\n");
     process.exit(1);
@@ -155,7 +154,7 @@ async function cmdCancel(args) {
   printJson(result);
 }
 
-async function cmdModels(args) {
+async function cmdModels(args: Record<string, any>): Promise<void> {
   if (!args._ || !args._[0]) {
     process.stderr.write("Error: agent id required (e.g. opencode, claude, codex)\n");
     process.exit(1);
@@ -163,14 +162,16 @@ async function cmdModels(args) {
   const agentId = args._[0];
   const config = await readConfig();
   const { agents } = await discoverAgents({ includeNotInstalled: false });
-  const selectedAgent = agents.find((a) => a.id === agentId);
+  const selectedAgent = agents.find((a: any) => a.id === agentId);
   if (!selectedAgent) {
-    process.stderr.write(`Error: agent "${agentId}" not found. Available: ${agents.map((a) => a.id).join(", ")}\n`);
+    process.stderr.write(`Error: agent "${agentId}" not found. Available: ${agents.map((a: any) => a.id).join(", ")}\n`);
     process.exit(1);
+    return;
   }
   if (!selectedAgent.acp?.available) {
     process.stderr.write(`Error: agent "${agentId}" does not have ACP available\n`);
     process.exit(1);
+    return;
   }
   try {
     const result = await probeAgentModels({
@@ -180,12 +181,12 @@ async function cmdModels(args) {
     });
     printJson(result);
   } catch (error) {
-    process.stderr.write(`Error: ${error.message}\n`);
+    process.stderr.write(`Error: ${(error as Error).message}\n`);
     process.exit(1);
   }
 }
 
-async function cmdSessions(args) {
+async function cmdSessions(args: Record<string, any>): Promise<void> {
   const result = await listSessions({
     includeArchived: args["include-archived"] === true,
     agent: args.agent,
@@ -195,13 +196,13 @@ async function cmdSessions(args) {
   printJson(result);
 }
 
-async function cmdConfig(args) {
+async function cmdConfig(args: Record<string, any>): Promise<void> {
   if (args.set) {
-    const setArgs = {};
+    const setArgs: Record<string, any> = {};
     for (const key of ["defaultAgent", "disabledAgents", "allowCurrentDirectory", "registryEnabled", "registryUrl", "registryCacheTtlSec", "launchExternalAgents", "allowBypassPermissions", "inheritEnvironment"]) {
       if (args[key] !== undefined) setArgs[key] = args[key];
     }
-    const result = await configureDispatcher({ action: "set", ...setArgs });
+    const result = await configureDispatcher({ action: "set", ...setArgs } as any);
     printJson(result);
   } else {
     const config = await readConfig();
@@ -209,7 +210,7 @@ async function cmdConfig(args) {
   }
 }
 
-async function main() {
+async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   const command = argv[0];
   const rest = argv.slice(1);
@@ -237,7 +238,7 @@ async function main() {
   }
 }
 
-main().catch((error) => {
+main().catch((error: Error) => {
   process.stderr.write(`acp-router-cli: ${error.message}\n`);
   process.exit(1);
 });

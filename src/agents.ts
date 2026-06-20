@@ -2,8 +2,8 @@ import fs from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
 import path from "node:path";
 
-import { BUILT_IN_AGENTS, COMMAND_TIMEOUT_MS, CONFIG_PATH } from "./constants.mjs";
-import { safeEnv, isPlainObject, execFileAsync } from "./utils.mjs";
+import { BUILT_IN_AGENTS, COMMAND_TIMEOUT_MS, CONFIG_PATH } from "./constants.js";
+import { safeEnv, isPlainObject, execFileAsync } from "./utils.js";
 import {
   readConfig,
   readAcpRegistry,
@@ -11,12 +11,178 @@ import {
   buildRegistryInstallHint,
   extractRegistryNpxPackage,
   buildNpxAcpFallback
-} from "./storage.mjs";
+} from "./storage.js";
 
-async function discoverAgents(args) {
-  const config = await readConfig();
+interface BuiltInAgentAcp {
+  executable: string;
+  versionArgs?: string[];
+  adapterStatus: string;
+  label: string;
+  buildArgsKey: string;
+  buildArgs: (ctx: { worktree: string }) => string[];
+}
+
+interface BuiltInAgent {
+  id: string;
+  displayName: string;
+  executable: string;
+  versionArgs: string[];
+  transport: string;
+  command: string;
+  acp?: BuiltInAgentAcp;
+  capabilities: string[];
+  source: string[];
+  notes: string[];
+}
+
+interface DispatcherConfig {
+  defaultAgent: string | null;
+  modeDefaults: Record<string, unknown>;
+  disabledAgents: string[];
+  allowCurrentDirectory: boolean;
+  registryEnabled: boolean;
+  registryUrl: string;
+  registryCacheTtlSec: number;
+  safety: {
+    requireAbsoluteWorktree: boolean;
+    launchExternalAgents: boolean;
+    defaultPermissionProfile: string;
+    allowBypassPermissions: boolean;
+    inheritEnvironment: boolean;
+  };
+  updatedAt: string | null;
+}
+
+interface ConfigureDispatcherArgs {
+  defaultAgent?: string | null;
+  modeDefaults?: Record<string, string>;
+  disabledAgents?: string[];
+  allowCurrentDirectory?: boolean;
+  registryEnabled?: boolean;
+  registryUrl?: string;
+  registryCacheTtlSec?: number;
+  launchExternalAgents?: boolean;
+  allowBypassPermissions?: boolean;
+  defaultPermissionProfile?: string;
+  inheritEnvironment?: boolean;
+}
+
+interface DiscoverAgentsArgs {
+  refresh?: boolean;
+  includeNotInstalled?: boolean;
+}
+
+interface AcpAdapterSpec {
+  executable: string;
+  installedPath: string | null;
+  version: string | null;
+  adapterStatus: string;
+  label: string;
+  buildArgsKey: string;
+  available: boolean;
+  launchMode?: string | null;
+  launchCommand?: string[] | null;
+}
+
+interface EnrichedAgent {
+  id: string;
+  displayName: string;
+  status: "available" | "not_installed" | "disabled";
+  version: string | null;
+  installedPath: string | null;
+  transport: string;
+  command: string;
+  acp: AcpAdapterSpec | null;
+  source: string[];
+  capabilities: string[];
+  icon: any;
+  notes: string[];
+  registry?: any;
+  description?: string | null;
+}
+
+interface DiscoverAgentsResult {
+  agents: EnrichedAgent[];
+  recommendedDefaultAgent: { agentId: string; reason: string } | null;
+  registry: any;
+  refreshedAt: string;
+}
+
+interface AcpRegistryResult {
+  agentsByRouterId: Map<string, any>;
+  meta: any;
+}
+
+interface ExecutableProbe {
+  path: string;
+  index: number;
+  version: string | null;
+  note: string | null;
+}
+
+interface SelectExecutableResult {
+  installedPath: string | null;
+  version: string | null;
+  note: string | null;
+  candidates: ExecutableProbe[];
+  selectionNote: string | null;
+}
+
+interface ProbeVersionResult {
+  version: string | null;
+  note: string | null;
+}
+
+interface ChooseAgentResult {
+  agentId: string | null;
+  reason: string;
+}
+
+interface ValidateWorktreeResult {
+  ok: boolean;
+  reason?: string;
+}
+
+interface GitResult {
+  ok: boolean;
+  stdout: string;
+  stderr: string;
+  error?: string;
+}
+
+interface WorktreeState {
+  isGitRepository: boolean;
+  gitRoot?: string;
+  currentBranch: string | null;
+  preExistingChangedFiles: string[];
+  note?: string;
+  statusProbeError?: string | null;
+}
+
+interface LaunchTarget {
+  command: string;
+  args: string[];
+  processLabel: string;
+}
+
+interface LaunchPlan {
+  kind: "record_only" | "acp_stdio" | "unsupported";
+  runnable: boolean;
+  status?: string;
+  adapterStatus: string;
+  summary: string;
+  risks: string[];
+}
+
+interface PlanLaunchArgs {
+  launchingEnabled: boolean;
+  selectedAgent: EnrichedAgent;
+}
+
+async function discoverAgents(args: DiscoverAgentsArgs): Promise<DiscoverAgentsResult> {
+  const config = await readConfig() as DispatcherConfig;
   const pathEntries = (process.env.PATH ?? "").split(path.delimiter).filter(Boolean);
-  const acpRegistry = await readAcpRegistry(config, { refresh: args.refresh === true });
+  const acpRegistry = await readAcpRegistry(config as any, { refresh: args.refresh === true });
   const agents = await Promise.all(BUILT_IN_AGENTS.map(async (agent) => enrichAgentWithRegistry(
     await probeAgent(agent, config, pathEntries),
     acpRegistry
@@ -35,8 +201,8 @@ async function discoverAgents(args) {
   };
 }
 
-async function configureDispatcher(args) {
-  const existing = await readConfig();
+async function configureDispatcher(args: ConfigureDispatcherArgs): Promise<{ config: DispatcherConfig }> {
+  const existing = await readConfig() as DispatcherConfig;
   const nextSafety = {
     ...existing.safety,
     launchExternalAgents: typeof args.launchExternalAgents === "boolean"
@@ -55,7 +221,7 @@ async function configureDispatcher(args) {
   const next = {
     ...existing,
     defaultAgent: Object.prototype.hasOwnProperty.call(args, "defaultAgent")
-      ? args.defaultAgent
+      ? (args.defaultAgent ?? null)
       : existing.defaultAgent,
     modeDefaults: {
       ...existing.modeDefaults,
@@ -74,7 +240,7 @@ async function configureDispatcher(args) {
       ? args.registryUrl.trim()
       : existing.registryUrl,
     registryCacheTtlSec: Number.isInteger(args.registryCacheTtlSec)
-      ? args.registryCacheTtlSec
+      ? (args.registryCacheTtlSec as number)
       : existing.registryCacheTtlSec,
     safety: nextSafety,
     updatedAt: new Date().toISOString()
@@ -83,7 +249,7 @@ async function configureDispatcher(args) {
   return { config: next };
 }
 
-function enrichAgentWithRegistry(agent, acpRegistry) {
+function enrichAgentWithRegistry(agent: EnrichedAgent, acpRegistry: AcpRegistryResult): EnrichedAgent {
   const registryAgent = acpRegistry.agentsByRouterId.get(agent.id);
   if (!registryAgent) return agent;
   const installHint = buildRegistryInstallHint(registryAgent);
@@ -98,7 +264,7 @@ function enrichAgentWithRegistry(agent, acpRegistry) {
   const notes = acpVersionFromRegistry
     ? agent.notes.filter((note) => !note.startsWith("ACP version probe failed:"))
     : agent.notes;
-  const extraNotes = [];
+  const extraNotes: string[] = [];
   if (npxFallback) {
     extraNotes.push(`ACP adapter available via npx: ${npxFallback.launchCommand.join(" ")}`);
   }
@@ -140,7 +306,7 @@ function enrichAgentWithRegistry(agent, acpRegistry) {
   };
 }
 
-async function probeAgent(agent, config, pathEntries) {
+async function probeAgent(agent: BuiltInAgent, config: DispatcherConfig, pathEntries: string[]): Promise<EnrichedAgent> {
   const selection = await selectExecutable(agent, pathEntries);
   const installedPath = selection.installedPath;
   const acpSelection = agent.acp ? await selectExecutable({
@@ -149,7 +315,7 @@ async function probeAgent(agent, config, pathEntries) {
   }, pathEntries) : null;
   const acpInstalledPath = acpSelection?.installedPath ?? null;
   const disabled = config.disabledAgents.includes(agent.id);
-  const notes = [];
+  const notes: string[] = [];
   if (acpInstalledPath) {
     notes.push(`Found ACP adapter at ${acpInstalledPath}`);
   }
@@ -161,7 +327,7 @@ async function probeAgent(agent, config, pathEntries) {
   if (selection.note) notes.push(selection.note);
   if (acpSelection?.selectionNote) notes.push(acpSelection.selectionNote);
   if (acpSelection?.note) notes.push(`ACP version probe failed: ${acpSelection.note.replace(/^Version probe failed: /, "")}`);
-  const status = disabled
+  const status: EnrichedAgent["status"] = disabled
     ? "disabled"
     : acpInstalledPath || installedPath
       ? "available"
@@ -174,7 +340,7 @@ async function probeAgent(agent, config, pathEntries) {
     version: acpSelection?.version ?? selection.version,
     installedPath,
     transport,
-    command: acpInstalledPath ? `${agent.acp.executable} <acp stdio>` : agent.command,
+    command: acpInstalledPath ? `${agent.acp!.executable} <acp stdio>` : agent.command,
     acp: agent.acp ? {
       executable: agent.acp.executable,
       installedPath: acpInstalledPath,
@@ -191,13 +357,13 @@ async function probeAgent(agent, config, pathEntries) {
   };
 }
 
-function compareExecutableProbe(a, b) {
+function compareExecutableProbe(a: ExecutableProbe, b: ExecutableProbe): number {
   const versionComparison = compareVersionStrings(b.version, a.version);
   if (versionComparison !== 0) return versionComparison;
   return a.index - b.index;
 }
 
-function compareVersionStrings(a, b) {
+function compareVersionStrings(a: string | null, b: string | null): number {
   const parsedA = parseVersionParts(a);
   const parsedB = parseVersionParts(b);
   const length = Math.max(parsedA.length, parsedB.length);
@@ -209,13 +375,13 @@ function compareVersionStrings(a, b) {
   return 0;
 }
 
-function parseVersionParts(value) {
+function parseVersionParts(value: string | null): number[] {
   const match = String(value ?? "").match(/\d+(?:\.\d+){0,3}/);
   if (!match) return [];
   return match[0].split(".").map((part) => Number.parseInt(part, 10)).filter(Number.isFinite);
 }
 
-async function probeVersion(executablePath, versionArgs) {
+async function probeVersion(executablePath: string, versionArgs: string[]): Promise<ProbeVersionResult> {
   try {
     const { stdout, stderr } = await execFileAsync(executablePath, versionArgs, {
       timeout: COMMAND_TIMEOUT_MS,
@@ -227,7 +393,7 @@ async function probeVersion(executablePath, versionArgs) {
       version: output.split(/\r?\n/).map((line) => line.trim()).find(Boolean) ?? null,
       note: null
     };
-  } catch (error) {
+  } catch (error: any) {
     return {
       version: null,
       note: `Version probe failed: ${error.code ?? error.message}`
@@ -235,9 +401,9 @@ async function probeVersion(executablePath, versionArgs) {
   }
 }
 
-async function findExecutables(binary, pathEntries) {
-  const seen = new Set();
-  const candidates = [];
+async function findExecutables(binary: string, pathEntries: string[]): Promise<string[]> {
+  const seen = new Set<string>();
+  const candidates: string[] = [];
   for (const entry of pathEntries) {
     const candidate = path.join(entry, binary);
     try {
@@ -253,21 +419,25 @@ async function findExecutables(binary, pathEntries) {
   return candidates;
 }
 
-async function selectExecutable(agent, pathEntries) {
+async function selectExecutable(
+  agent: { executable: string; versionArgs?: string[] },
+  pathEntries: string[]
+): Promise<SelectExecutableResult> {
   const candidates = await findExecutables(agent.executable, pathEntries);
   if (candidates.length === 0) {
     return {
       installedPath: null,
       version: null,
       note: null,
-      candidates: []
+      candidates: [],
+      selectionNote: null
     };
   }
 
   const probes = await Promise.all(candidates.map(async (candidate, index) => ({
     path: candidate,
     index,
-    ...(await probeVersion(candidate, agent.versionArgs))
+    ...(await probeVersion(candidate, agent.versionArgs ?? []))
   })));
   const sorted = [...probes].sort(compareExecutableProbe);
   const selected = sorted[0];
@@ -281,20 +451,22 @@ async function selectExecutable(agent, pathEntries) {
   };
 }
 
-function chooseAgent(agents, config, mode) {
+function chooseAgent(agents: EnrichedAgent[], config: DispatcherConfig, mode: string | null): ChooseAgentResult {
   const disabled = new Set(config.disabledAgents ?? []);
   const available = agents.filter((agent) => agent.status === "available" && !disabled.has(agent.id));
   const explicit = config.defaultAgent && available.find((agent) => agent.id === config.defaultAgent);
   if (explicit) return { agentId: explicit.id, reason: "configured default agent" };
-  const modeDefault = mode && config.modeDefaults?.[mode];
-  const modeAgent = modeDefault && available.find((agent) => agent.id === modeDefault);
+  const modeDefault = mode ? config.modeDefaults?.[mode] : undefined;
+  const modeAgent = typeof modeDefault === "string" && modeDefault
+    ? available.find((agent) => agent.id === modeDefault)
+    : undefined;
   if (modeAgent) return { agentId: modeAgent.id, reason: `configured default for ${mode}` };
   const acp = available.find((agent) => agent.transport === "acp_stdio");
   if (acp) return { agentId: acp.id, reason: "native ACP available" };
   return { agentId: null, reason: "no available ACP agent found; CLI fallback removed" };
 }
 
-async function validateWorktree(worktree) {
+async function validateWorktree(worktree: string): Promise<ValidateWorktreeResult> {
   if (typeof worktree !== "string" || !worktree.trim()) {
     return { ok: false, reason: "worktree_required" };
   }
@@ -311,7 +483,7 @@ async function validateWorktree(worktree) {
   }
 }
 
-async function collectWorktreeState(worktree) {
+async function collectWorktreeState(worktree: string): Promise<WorktreeState> {
   const gitRoot = await runGit(worktree, ["rev-parse", "--show-toplevel"]);
   if (!gitRoot.ok) {
     return {
@@ -332,7 +504,7 @@ async function collectWorktreeState(worktree) {
   };
 }
 
-async function runGit(cwd, args) {
+async function runGit(cwd: string, args: string[]): Promise<GitResult> {
   try {
     const { stdout, stderr } = await execFileAsync("git", args, {
       cwd,
@@ -341,7 +513,7 @@ async function runGit(cwd, args) {
       env: safeEnv()
     });
     return { ok: true, stdout, stderr };
-  } catch (error) {
+  } catch (error: any) {
     return {
       ok: false,
       stdout: error.stdout ?? "",
@@ -351,7 +523,7 @@ async function runGit(cwd, args) {
   }
 }
 
-function parseGitStatusFiles(stdout) {
+function parseGitStatusFiles(stdout: string): string[] {
   return stdout
     .split(/\r?\n/)
     .map((line) => line.trimEnd())
@@ -360,14 +532,14 @@ function parseGitStatusFiles(stdout) {
     .filter(Boolean);
 }
 
-function getAcpAdapterArgs(selectedAgent, worktree) {
+function getAcpAdapterArgs(selectedAgent: EnrichedAgent, worktree: string): string[] {
   if (selectedAgent.id === "opencode") {
     return ["acp", "--cwd", worktree, "--print-logs", "--log-level", "INFO"];
   }
   return [];
 }
 
-function resolveAcpLaunchTarget(acpSpec, selectedAgent, worktree) {
+function resolveAcpLaunchTarget(acpSpec: AcpAdapterSpec | null, selectedAgent: EnrichedAgent, worktree: string): LaunchTarget | null {
   if (!acpSpec?.available) return null;
   if (acpSpec.launchMode === "npx" && Array.isArray(acpSpec.launchCommand) && acpSpec.launchCommand.length > 0) {
     return {
@@ -386,14 +558,14 @@ function resolveAcpLaunchTarget(acpSpec, selectedAgent, worktree) {
   return null;
 }
 
-function isAcpRunReady(selectedAgent) {
+function isAcpRunReady(selectedAgent: EnrichedAgent): boolean {
   const acp = selectedAgent?.acp;
   if (!acp?.available) return false;
   if (acp.installedPath) return true;
   return acp.launchMode === "npx" && Array.isArray(acp.launchCommand) && acp.launchCommand.length > 0;
 }
 
-function buildAcpUnavailableError(selectedAgent) {
+function buildAcpUnavailableError(selectedAgent: EnrichedAgent): string {
   if (selectedAgent.id === "cursor-agent") {
     return "Cursor Agent has no ACP adapter; CLI fallback removed. Install a Cursor ACP adapter or use a different agent.";
   }
@@ -405,7 +577,7 @@ function buildAcpUnavailableError(selectedAgent) {
   return `${base} Install the ${selectedAgent.displayName} ACP adapter or use a different agent.`;
 }
 
-function planLaunch({ launchingEnabled, selectedAgent }) {
+function planLaunch({ launchingEnabled, selectedAgent }: PlanLaunchArgs): LaunchPlan {
   if (!launchingEnabled) {
     return {
       kind: "record_only",
@@ -456,4 +628,26 @@ export {
   isAcpRunReady,
   buildAcpUnavailableError,
   planLaunch
+};
+
+export type {
+  BuiltInAgent,
+  BuiltInAgentAcp,
+  DispatcherConfig,
+  ConfigureDispatcherArgs,
+  DiscoverAgentsArgs,
+  DiscoverAgentsResult,
+  AcpAdapterSpec,
+  EnrichedAgent,
+  AcpRegistryResult,
+  ExecutableProbe,
+  SelectExecutableResult,
+  ProbeVersionResult,
+  ChooseAgentResult,
+  ValidateWorktreeResult,
+  GitResult,
+  WorktreeState,
+  LaunchTarget,
+  LaunchPlan,
+  PlanLaunchArgs
 };

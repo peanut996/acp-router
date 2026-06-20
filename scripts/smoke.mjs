@@ -33,7 +33,7 @@ try {
 
   if (
     result.stderr
-    || result.serverVersion !== "0.5.6"
+    || result.serverVersion !== "0.5.7"
     || result.discoveryCount < 1
     || result.runStatus !== "completed"
     || result.adapterStatus !== "opencode_acp"
@@ -156,14 +156,18 @@ if (process.argv.join(" ").includes("Smoke async cancel") || process.argv.join("
 }
 
 async function createFakeCursorAgent(binDir) {
-  const scriptPath = path.join(binDir, "cursor");
+  const scriptPath = path.join(binDir, "agent");
   const script = `#!/usr/bin/env node
 if (process.argv.includes("--version") || process.argv.includes("-v")) {
-  console.log("fake-cursor 999.0.0");
+  console.log("fake-cursor-agent 9999.0.0");
   process.exit(0);
 }
-if (process.argv[2] !== "agent") {
-  console.error("expected cursor agent subcommand");
+if (!process.argv.includes("--print")
+  || !process.argv.includes("--output-format")
+  || !process.argv.includes("stream-json")
+  || !process.argv.includes("--workspace")
+  || !process.argv.includes("--trust")) {
+  console.error("expected Cursor Agent print-mode arguments");
   process.exit(1);
 }
 console.log(JSON.stringify({ type: "message", sessionId: "fake-cursor-session", message: "Fake Cursor Agent completed." }));
@@ -474,6 +478,8 @@ async function runMcpSmoke(home, worktree, binDirs, pidFile) {
     cursorStatus: parsedToolResults[7]?.status,
     cursorAdapterStatus: parsedToolResults[7]?.adapterStatus,
     cursorProviderSessionId: parsedToolResults[7]?.providerSessionId,
+    cursorFailureReason: parsedToolResults[7]?.failureReason,
+    cursorAgentErrors: parsedToolResults[7]?.agentErrors,
     codexStatus: parsedToolResults[8]?.status,
     codexAdapterStatus: parsedToolResults[8]?.adapterStatus,
     codexProviderSessionId: parsedToolResults[8]?.providerSessionId,

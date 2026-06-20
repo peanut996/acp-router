@@ -45,7 +45,7 @@ async function handshake(cwd) {
       clientInfo: {
         name: "acp-coding-agent-dispatcher-smoke",
         title: "ACP Coding Agent Dispatcher Smoke",
-        version: "0.5.6"
+        version: "0.5.7"
       }
     }
   });

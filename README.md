@@ -7,7 +7,7 @@ Codex plugin for discovering local coding agents and recording dispatcher jobs t
 This repository is an alpha implementation. It can:
 
 - expose dispatcher MCP tools to Codex;
-- discover local `opencode`, `cursor`, `claude`, and `codex` commands on `PATH`;
+- discover local `opencode`, Cursor Agent `agent`, `claude`, and `codex` commands on `PATH`;
 - probe installed agent versions when available;
 - persist dispatcher config, sessions, and jobs under `~/.codex/agent-dispatcher`;
 - write per-job JSONL logs;
@@ -38,7 +38,7 @@ npm run smoke:opencode:sessions
 npm run e2e:restart-recovery
 ```
 
-`npm run smoke` uses fake local `opencode`, `claude`, `cursor`, and `codex` commands so it can validate the ACP and CLI fallback adapters without model calls.
+`npm run smoke` uses fake local `opencode`, `claude`, Cursor Agent `agent`, and `codex` commands so it can validate the ACP and CLI fallback adapters without model calls.
 
 `npm run smoke:sessions` uses fake OpenCode ACP to validate session list, continue, provider session resume, and archive behavior without model calls.
 

@@ -8,7 +8,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 
 const SERVER_NAME = "acp-coding-agent-dispatcher";
-const SERVER_VERSION = "0.5.6";
+const SERVER_VERSION = "0.5.7";
 const DATA_DIR = process.env.AGENT_DISPATCHER_DATA_DIR
   ? path.resolve(process.env.AGENT_DISPATCHER_DATA_DIR)
   : path.join(os.homedir(), ".codex", "agent-dispatcher");
@@ -186,10 +186,10 @@ const BUILT_IN_AGENTS = [
   {
     id: "cursor-agent",
     displayName: "Cursor Agent",
-    executable: "cursor",
+    executable: "agent",
     versionArgs: ["--version"],
     transport: "cli",
-    command: "cursor agent --cwd <worktree> --output-format streaming-json --permission-mode <mode> --single <prompt>",
+    command: "agent --print --output-format stream-json --workspace <worktree> --trust <prompt>",
     capabilities: ["file_edit", "shell", "diff_collection"],
     source: ["path"],
     notes: ["CLI fallback target; sessions are dispatcher-managed until an ACP adapter is available."]
@@ -1796,15 +1796,14 @@ function getCliAdapterSpec(agentId) {
       label: "Cursor Agent",
       adapterStatus: "cursor_agent_cli",
       buildArgs: ({ prompt, worktree, permissionProfile, providerSessionId }) => [
-        "agent",
-        "--cwd",
-        worktree,
+        "--print",
         "--output-format",
-        "streaming-json",
-        "--permission-mode",
-        mapAgentPermissionMode(permissionProfile),
+        "stream-json",
+        "--workspace",
+        worktree,
+        "--trust",
+        ...mapCursorAgentPermissionArgs(permissionProfile),
         ...(providerSessionId ? ["--resume", providerSessionId] : []),
-        "--single",
         prompt
       ]
     },
@@ -1856,6 +1855,13 @@ function mapAgentPermissionMode(permissionProfile) {
   if (permissionProfile === "plan") return "plan";
   if (permissionProfile === "bypass_permissions") return "bypassPermissions";
   return "acceptEdits";
+}
+
+function mapCursorAgentPermissionArgs(permissionProfile) {
+  if (permissionProfile === "plan") return ["--mode", "plan"];
+  if (permissionProfile === "bypass_permissions") return ["--force", "--sandbox", "disabled"];
+  if (permissionProfile === "accept_edits") return ["--force"];
+  return [];
 }
 
 function mapCodexSandbox(permissionProfile) {

@@ -597,6 +597,12 @@ async function runAcpStdioJob({ args, job, session, selectedAgent, timeoutSec, a
       : await collectWorktreeState(args.worktree);
     const changedFiles = diffChangedFiles(job.worktreeState, afterState);
     const agentText = extractAgentText(events);
+    const planViolations = (permissionProfile === "plan" && changedFiles.length > 0)
+      ? [`plan_mode_violation: Agent modified ${changedFiles.length} file(s) despite permissionProfile=plan. The ACP adapter did not enforce read-only mode.`]
+      : [];
+    const planRisks = planViolations.length > 0
+      ? planViolations
+      : (stopReason && stopReason !== "end_turn" ? [`${adapterLabel} stopped with ${stopReason}.`] : []);
     return {
       events: [...events],
       sessionPatch: {
@@ -623,7 +629,7 @@ async function runAcpStdioJob({ args, job, session, selectedAgent, timeoutSec, a
         },
         resultSummary: agentText || `${adapterLabel} completed with stopReason=${stopReason ?? "unknown"}.`,
         validation: [],
-        risks: stopReason && stopReason !== "end_turn" ? [`OpenCode stopped with ${stopReason}.`] : []
+        risks: planRisks
       }
     };
   } catch (error) {

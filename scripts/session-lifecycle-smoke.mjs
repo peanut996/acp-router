@@ -11,7 +11,7 @@ const execFileAsync = promisify(execFile);
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const keepArtifacts = process.env.ACP_DISPATCHER_KEEP_SMOKE_ARTIFACTS === "1";
 
-const tempRoot = await mkdtemp(path.join(os.tmpdir(), "acp-dispatcher-session-lifecycle-"));
+const tempRoot = await mkdtemp(path.join(os.tmpdir(), "agent-router-session-lifecycle-"));
 const tempHome = path.join(tempRoot, "home");
 const dispatcherDataDir = path.join(tempRoot, "dispatcher-data");
 const tempWorktree = path.join(tempRoot, "worktree");
@@ -152,7 +152,7 @@ try {
     env: {
       ...process.env,
       HOME: tempHome,
-      AGENT_DISPATCHER_DATA_DIR: dispatcherDataDir,
+      AGENT_ROUTER_DATA_DIR: dispatcherDataDir,
       AGENT_DISPATCHER_LIFECYCLE_FAKE_LOG: fakeOpenCodeLog,
       PATH: `${tempBin}${path.delimiter}${process.env.PATH ?? ""}`
     }
@@ -235,7 +235,7 @@ try {
   assertCompletedOpenCodeRun(continuedRun, "continued run");
   assert(
     continuedRun.sessionId === firstRun.sessionId,
-    "Expected continue_coding_agent_session to return the same dispatcher sessionId.",
+    "Expected continue_coding_agent_session to return the same Agent Router sessionId.",
     { firstRun, continuedRun }
   );
   assert(
@@ -270,7 +270,7 @@ try {
   assertCompletedOpenCodeRun(nativeContinuedRun, "native-only continued run", "fake-native-only-session");
   assert(
     nativeContinuedRun.sessionId === nativeOnlySession.sessionId,
-    "Expected native-only continue to materialize and reuse the native dispatcher sessionId.",
+    "Expected native-only continue to materialize and reuse the native Agent Router sessionId.",
     { nativeOnlySession, nativeContinuedRun }
   );
 
@@ -492,7 +492,7 @@ function handle(message) {
           {
             sessionId: providerSessionId,
             cwd,
-            title: "Fake OpenCode dispatcher-bound session",
+            title: "Fake OpenCode Agent Router-bound session",
             updatedAt: "2026-06-20T00:00:02Z",
             _meta: { messageCount: 2 }
           },

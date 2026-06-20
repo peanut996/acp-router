@@ -7,11 +7,13 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 
-const SERVER_NAME = "acp-coding-agent-dispatcher";
-const SERVER_VERSION = "0.5.7";
-const DATA_DIR = process.env.AGENT_DISPATCHER_DATA_DIR
-  ? path.resolve(process.env.AGENT_DISPATCHER_DATA_DIR)
-  : path.join(os.homedir(), ".codex", "agent-dispatcher");
+const SERVER_NAME = "agent-router";
+const SERVER_VERSION = "0.6.0";
+const DATA_DIR = process.env.AGENT_ROUTER_DATA_DIR
+  ? path.resolve(process.env.AGENT_ROUTER_DATA_DIR)
+  : process.env.AGENT_DISPATCHER_DATA_DIR
+    ? path.resolve(process.env.AGENT_DISPATCHER_DATA_DIR)
+    : path.join(os.homedir(), ".codex", "agent-router");
 const REGISTRY_PATH = path.join(DATA_DIR, "registry.json");
 const CONFIG_PATH = path.join(DATA_DIR, "config.json");
 const LOG_DIR = path.join(DATA_DIR, "logs");
@@ -26,7 +28,7 @@ let orphanRecoveryPromise = null;
 const TOOL_DEFINITIONS = [
   {
     name: "discover_coding_agents",
-    description: "Discover local coding agents from safe PATH inspection and dispatcher configuration.",
+    description: "Discover local coding agents from safe PATH inspection and Agent Router configuration.",
     inputSchema: {
       type: "object",
       properties: {
@@ -47,7 +49,7 @@ const TOOL_DEFINITIONS = [
   },
   {
     name: "configure_coding_agent_dispatcher",
-    description: "Update dispatcher configuration in the local Codex agent-dispatcher config file.",
+    description: "Update Agent Router configuration in the local Codex agent-router config file.",
     inputSchema: {
       type: "object",
       properties: {
@@ -89,7 +91,7 @@ const TOOL_DEFINITIONS = [
   },
   {
     name: "list_coding_agent_jobs",
-    description: "List dispatcher jobs from the local registry.",
+    description: "List Agent Router jobs from the local registry.",
     inputSchema: {
       type: "object",
       properties: {
@@ -103,7 +105,7 @@ const TOOL_DEFINITIONS = [
   },
   {
     name: "get_coding_agent_job",
-    description: "Get a dispatcher job by id.",
+    description: "Get an Agent Router job by id.",
     inputSchema: {
       type: "object",
       required: ["jobId"],
@@ -115,7 +117,7 @@ const TOOL_DEFINITIONS = [
   },
   {
     name: "cancel_coding_agent_job",
-    description: "Cancel a dispatcher job and terminate an active child process when the current MCP server owns it.",
+    description: "Cancel an Agent Router job and terminate an active child process when the current MCP server owns it.",
     inputSchema: {
       type: "object",
       required: ["jobId"],
@@ -128,7 +130,7 @@ const TOOL_DEFINITIONS = [
   },
   {
     name: "list_coding_agent_sessions",
-    description: "List dispatcher sessions from the local registry.",
+    description: "List Agent Router sessions from the local registry.",
     inputSchema: {
       type: "object",
       properties: {
@@ -142,7 +144,7 @@ const TOOL_DEFINITIONS = [
   },
   {
     name: "continue_coding_agent_session",
-    description: "Create a new tracked job attached to an existing dispatcher session.",
+    description: "Create a new tracked job attached to an existing Agent Router session.",
     inputSchema: {
       type: "object",
       required: ["agent", "sessionId", "prompt", "worktree"],
@@ -159,7 +161,7 @@ const TOOL_DEFINITIONS = [
   },
   {
     name: "archive_coding_agent_session",
-    description: "Mark a dispatcher session as archived in the local registry.",
+    description: "Mark an Agent Router session as archived in the local registry.",
     inputSchema: {
       type: "object",
       required: ["sessionId"],
@@ -376,7 +378,7 @@ async function createJob(args) {
     return {
       status: "failed",
       error: "bypass_permissions_disabled",
-      message: "The dispatcher config does not allow bypass_permissions by default."
+      message: "The Agent Router config does not allow bypass_permissions by default."
     };
   }
 
@@ -407,7 +409,7 @@ async function createJob(args) {
       status: "failed",
       error: "worktree_locked",
       jobId: activeConflict.jobId,
-      message: "Another writable dispatcher job is already active for this worktree."
+      message: "Another writable Agent Router job is already active for this worktree."
     };
   }
 
@@ -430,7 +432,7 @@ async function createJob(args) {
     {
       type: "job_created",
       timestamp: now,
-      message: "Job recorded in local dispatcher registry."
+      message: "Job recorded in local Agent Router registry."
     },
     {
       type: adapterStatus,
@@ -527,7 +529,7 @@ async function createJob(args) {
     availableModels: job.availableModels ?? session.availableModels ?? [],
     agentConfigOptions: job.agentConfigOptions ?? session.agentConfigOptions ?? [],
     selectionReason: selected.reason,
-    message: `${selected.agentId} job recorded by dispatcher alpha. Use get_coding_agent_job to inspect it.`
+    message: `${selected.agentId} job recorded by Agent Router alpha. Use get_coding_agent_job to inspect it.`
   };
 }
 
@@ -581,7 +583,7 @@ function createRunController(jobId) {
     },
     cancel(reason) {
       this.cancelRequested = true;
-      this.cancelReason = reason || "Cancelled by dispatcher caller.";
+      this.cancelReason = reason || "Cancelled by Agent Router caller.";
       if (typeof this.cancelProcess === "function") {
         return Boolean(this.cancelProcess());
       }
@@ -649,7 +651,7 @@ async function persistJobRunResult({ job, session, selectedAgent, runResult }) {
       ...runResult.jobPatch,
       status: "cancelled",
       endedAt: currentJob.endedAt ?? runResult.jobPatch.endedAt,
-      resultSummary: currentJob.resultSummary ?? "Cancelled by dispatcher caller.",
+      resultSummary: currentJob.resultSummary ?? "Cancelled by Agent Router caller.",
       risks: currentJob.risks ?? []
     }
     : runResult.jobPatch;
@@ -680,7 +682,7 @@ async function persistJobRunResult({ job, session, selectedAgent, runResult }) {
 async function markJobRunCrashed(runRequest, error) {
   ACTIVE_RUNS.delete(runRequest.job.jobId);
   const failedAt = new Date().toISOString();
-  const message = `Dispatcher runner crashed: ${error.message}`;
+  const message = `Agent Router runner crashed: ${error.message}`;
   const runResult = {
     events: [
       {
@@ -739,11 +741,11 @@ async function cancelJob(args) {
     const activeRun = ACTIVE_RUNS.get(job.jobId);
     if (activeRun) {
       activeProcessInfo = activeRun.processInfo;
-      activeProcessCancelled = activeRun.cancel(args.reason || "Cancelled by dispatcher caller.");
+      activeProcessCancelled = activeRun.cancel(args.reason || "Cancelled by Agent Router caller.");
     }
     job.status = "cancelled";
     job.endedAt = new Date().toISOString();
-    job.resultSummary = args.reason || "Cancelled by dispatcher caller.";
+    job.resultSummary = args.reason || "Cancelled by Agent Router caller.";
     if (isPlainObject(job.process) || isPlainObject(activeProcessInfo)) {
       job.process = {
         ...(isPlainObject(job.process) ? job.process : {}),
@@ -759,7 +761,7 @@ async function cancelJob(args) {
       {
         type: "cancelled",
         timestamp: job.endedAt,
-        message: args.reason || "Cancelled by dispatcher caller."
+        message: args.reason || "Cancelled by Agent Router caller."
       }
     ];
     await writeRegistry(registry);
@@ -878,7 +880,7 @@ async function listOpenCodeNativeSessions({ selectedAgent, worktree, env }) {
       clientCapabilities: {},
       clientInfo: {
         name: SERVER_NAME,
-        title: "ACP Coding Agent Dispatcher",
+        title: "Agent Router",
         version: SERVER_VERSION
       }
     });
@@ -1111,8 +1113,8 @@ async function recoverOrphanedJobs() {
     const previousStatus = job.status;
     const processKill = bestEffortKillJobProcess(job, recoveredAt);
     const message = processKill?.status === "signal_sent"
-      ? "Dispatcher marked this job orphaned during MCP server restart recovery and sent SIGTERM to the recorded child process."
-      : "Dispatcher marked this job orphaned during MCP server restart recovery; the previous runner process is no longer owned by this server.";
+      ? "Agent Router marked this job orphaned during MCP server restart recovery and sent SIGTERM to the recorded child process."
+      : "Agent Router marked this job orphaned during MCP server restart recovery; the previous runner process is no longer owned by this server.";
     const event = {
       type: "orphaned",
       timestamp: recoveredAt,
@@ -1135,7 +1137,7 @@ async function recoverOrphanedJobs() {
     }
     job.risks = [
       processKill?.status === "signal_sent"
-        ? "Dispatcher sent SIGTERM to the recorded child PID during restart recovery; inspect the worktree if results look unexpected."
+        ? "Agent Router sent SIGTERM to the recorded child PID during restart recovery; inspect the worktree if results look unexpected."
         : "The original agent process may have continued after the MCP server exited; inspect the worktree if results look unexpected."
     ];
     job.recentEvents = [...(Array.isArray(job.recentEvents) ? job.recentEvents : []), event];
@@ -1421,7 +1423,7 @@ function planLaunch({ launchingEnabled, selectedAgent }) {
       runnable: false,
       status: "completed",
       adapterStatus: "record_only",
-      summary: "Recorded dispatcher job, selected agent, session binding, and current worktree state without launching an external process.",
+      summary: "Recorded Agent Router job, selected agent, session binding, and current worktree state without launching an external process.",
       risks: ["No external agent process was launched in this alpha build."]
     };
   }
@@ -1488,7 +1490,7 @@ async function runOpenCodeAcpJob({ args, job, session, selectedAgent, timeoutSec
       clientCapabilities: {},
       clientInfo: {
         name: SERVER_NAME,
-        title: "ACP Coding Agent Dispatcher",
+        title: "Agent Router",
         version: SERVER_VERSION
       }
     });
@@ -1592,7 +1594,7 @@ async function runOpenCodeAcpJob({ args, job, session, selectedAgent, timeoutSec
     const agentErrors = extractAgentErrors(collectedEvents);
     const cancelled = controller?.cancelRequested === true;
     const failureReason = cancelled
-      ? (controller.cancelReason || "OpenCode ACP cancelled by dispatcher caller.")
+      ? (controller.cancelReason || "OpenCode ACP cancelled by Agent Router caller.")
       : buildFailureReason("OpenCode ACP", error, agentErrors);
     return {
       events: [
@@ -1712,7 +1714,7 @@ async function runCliFallbackJob({ args, job, session, selectedAgent, timeoutSec
   }
 
   if (result.cancelled) {
-    const cancelReason = controller?.cancelReason || `${spec.label} CLI cancelled by dispatcher caller.`;
+    const cancelReason = controller?.cancelReason || `${spec.label} CLI cancelled by Agent Router caller.`;
     return {
       events: [
         ...events,
@@ -1928,7 +1930,7 @@ function appendLimited(current, chunk, maxLength) {
   if (current.length >= maxLength) return current;
   const next = `${current}${chunk}`;
   if (next.length <= maxLength) return next;
-  return `${next.slice(0, maxLength)}\n[dispatcher truncated captured output]\n`;
+  return `${next.slice(0, maxLength)}\n[Agent Router truncated captured output]\n`;
 }
 
 class AcpStdioClient {
@@ -2056,7 +2058,7 @@ class AcpStdioClient {
       this.logEvents.push({
         type: "acp_permission_cancelled",
         timestamp: new Date().toISOString(),
-        message: "Dispatcher cancelled an ACP permission request.",
+        message: "Agent Router cancelled an ACP permission request.",
         params: message.params
       });
       this.respond(message.id, { outcome: "cancelled" });

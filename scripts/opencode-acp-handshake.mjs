@@ -43,9 +43,9 @@ async function handshake(cwd) {
       protocolVersion: 1,
       clientCapabilities: {},
       clientInfo: {
-        name: "acp-coding-agent-dispatcher-smoke",
-        title: "ACP Coding Agent Dispatcher Smoke",
-        version: "0.5.7"
+        name: "agent-router-smoke",
+        title: "Agent Router Smoke",
+        version: "0.6.0"
       }
     }
   });

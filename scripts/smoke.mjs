@@ -9,7 +9,7 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const tempRoot = await mkdtemp(path.join(os.tmpdir(), "acp-dispatcher-smoke-"));
+const tempRoot = await mkdtemp(path.join(os.tmpdir(), "agent-router-smoke-"));
 const tempHome = path.join(tempRoot, "home");
 const tempWorktree = path.join(tempRoot, "worktree");
 const tempBin = path.join(tempRoot, "bin");
@@ -33,7 +33,7 @@ try {
 
   if (
     result.stderr
-    || result.serverVersion !== "0.5.7"
+    || result.serverVersion !== "0.6.0"
     || result.discoveryCount < 1
     || result.runStatus !== "completed"
     || result.adapterStatus !== "opencode_acp"

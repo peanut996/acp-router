@@ -21,10 +21,10 @@ if (!VALID_AGENTS.has(options.agent)) {
   throw new Error(`Unsupported --agent ${options.agent}. Use one of: ${Array.from(VALID_AGENTS).join(", ")}`);
 }
 
-const tempRoot = await mkdtemp(path.join(os.tmpdir(), `acp-dispatcher-e2e-${options.agent}-`));
+const tempRoot = await mkdtemp(path.join(os.tmpdir(), `agent-router-e2e-${options.agent}-`));
 const worktree = path.join(tempRoot, "worktree");
 const dispatcherDataDir = path.join(tempRoot, "dispatcher-data");
-const expectedLine = options.expectedLine ?? `ACP Dispatcher E2E completed by ${options.agent}.`;
+const expectedLine = options.expectedLine ?? `Agent Router E2E completed by ${options.agent}.`;
 const startedAt = Date.now();
 let client = null;
 let keepArtifacts = options.keep;
@@ -36,14 +36,14 @@ try {
     cwd: repoRoot,
     env: {
       ...process.env,
-      AGENT_DISPATCHER_DATA_DIR: dispatcherDataDir
+      AGENT_ROUTER_DATA_DIR: dispatcherDataDir
     }
   });
   await client.start();
   const initialize = await client.request("initialize", {
     protocolVersion: "2024-11-05",
     capabilities: {},
-    clientInfo: { name: "dispatcher-e2e", version: "0.0.0" }
+    clientInfo: { name: "agent-router-e2e", version: "0.0.0" }
   });
   const configResult = await client.callTool("configure_coding_agent_dispatcher", {
     launchExternalAgents: true
@@ -220,7 +220,7 @@ async function waitForLatestTerminalJob({ dispatcherDataDir, timeoutMs, pollStat
     }
     await sleep(1000);
   }
-  throw new Error(`No terminal dispatcher job found before timeout. Last status: ${lastJob?.status ?? "none"}`);
+  throw new Error(`No terminal Agent Router job found before timeout. Last status: ${lastJob?.status ?? "none"}`);
 }
 
 async function readLatestJob(dispatcherDataDir) {
@@ -265,7 +265,7 @@ This may call external agent models and incur cost.
 
 Options:
   --agent <id>                  opencode, claude, cursor-agent, or codex (default: opencode)
-  --timeout-sec <seconds>       Dispatcher job timeout (default: 300)
+  --timeout-sec <seconds>       Agent Router job timeout (default: 300)
   --permission-profile <name>   plan, workspace_write, accept_edits, or bypass_permissions (default: workspace_write)
   --expected-line <text>        Line that the agent must add to note.txt
   --prompt <text>               Override the default prompt
@@ -283,12 +283,12 @@ Examples:
 async function prepareWorktree({ worktree, options, expectedLine }) {
   await mkdir(worktree, { recursive: true });
   await git(worktree, ["init", "-b", "master"]);
-  await git(worktree, ["config", "user.email", "dispatcher-e2e@example.invalid"]);
-  await git(worktree, ["config", "user.name", "ACP Dispatcher E2E"]);
+  await git(worktree, ["config", "user.email", "agent-router-e2e@example.invalid"]);
+  await git(worktree, ["config", "user.name", "Agent Router E2E"]);
   await writeFile(
     path.join(worktree, "note.txt"),
     [
-      "ACP Dispatcher E2E baseline",
+      "Agent Router E2E baseline",
       `Expected line: ${expectedLine}`,
       ""
     ].join("\n"),
@@ -305,7 +305,7 @@ async function prepareWorktree({ worktree, options, expectedLine }) {
     );
   }
   await git(worktree, ["add", "."]);
-  await git(worktree, ["commit", "-m", "Prepare dispatcher E2E baseline"]);
+  await git(worktree, ["commit", "-m", "Prepare Agent Router E2E baseline"]);
 }
 
 function buildDefaultPrompt(expectedLine) {

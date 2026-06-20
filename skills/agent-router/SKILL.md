@@ -1,22 +1,22 @@
 ---
-name: acp-coding-agent-dispatcher
-description: Dispatch independent coding tasks from Codex to local ACP or CLI coding agents through the bundled dispatcher MCP tools.
+name: agent-router
+description: Route independent coding tasks from Codex to local ACP or CLI coding agents through the bundled Agent Router MCP tools.
 ---
 
-# ACP Coding Agent Dispatcher
+# Agent Router
 
-Use this skill when the user asks Codex to hand off a clearly scoped coding task to another local coding agent, compare agent options, continue an external agent session, or inspect dispatcher jobs.
+Use this skill when the user asks Codex to hand off a clearly scoped coding task to another local coding agent, compare agent options, continue an external agent session, or inspect Agent Router jobs.
 
 ## When To Use
 
-Use the dispatcher when all of these are true:
+Use Agent Router when all of these are true:
 
 - The task can be described as a bounded prompt with clear deliverables.
 - The work can happen in a dedicated or sibling worktree.
 - The outcome can be reviewed by Codex through changed files, a diff summary, and validation output.
 - The user expects an external coding agent such as OpenCode, Claude Code, Cursor Agent, Codex CLI, or another ACP-compatible agent to do the implementation work.
 
-Do not use the dispatcher for tiny edits, tasks that require the current Codex thread's full context, secrets handling, destructive operations, or work that cannot be isolated to a worktree.
+Do not use Agent Router for tiny edits, tasks that require the current Codex thread's full context, secrets handling, destructive operations, or work that cannot be isolated to a worktree.
 
 ## Tool Flow
 
@@ -37,4 +37,4 @@ When calling `run_coding_agent` or `continue_coding_agent_session`, include:
 - Constraints from the user and repository instructions.
 - Expected final report: changed files, tests or validation, risks, and unresolved questions.
 
-The alpha MCP server exposes safe local registry tools. It discovers installed agents, records jobs and sessions, writes JSONL job logs, captures current git worktree state, and can run OpenCode through ACP when `launchExternalAgents` is explicitly enabled and `run_coding_agent` is called with `async=false`. Other external process launch paths remain disabled until their adapters are implemented.
+The alpha MCP server exposes safe local registry tools. It discovers installed agents, records jobs and sessions, writes JSONL job logs, captures current git worktree state, and can run OpenCode through native ACP plus Claude Code, Cursor Agent, and Codex CLI through CLI fallback when `launchExternalAgents` is explicitly enabled. External launches are disabled by default and should be used only with an explicit absolute worktree.

@@ -1,15 +1,15 @@
-# ACP Coding Agent Dispatcher
+# Agent Router
 
-Codex plugin for discovering local coding agents and recording dispatcher jobs through a bundled MCP server.
+Codex plugin for discovering local coding agents and recording Agent Router jobs through a bundled MCP server.
 
 ## Current Status
 
 This repository is an alpha implementation. It can:
 
-- expose dispatcher MCP tools to Codex;
+- expose Agent Router MCP tools to Codex;
 - discover local `opencode`, Cursor Agent `agent`, `claude`, and `codex` commands on `PATH`;
 - probe installed agent versions when available;
-- persist dispatcher config, sessions, and jobs under `~/.codex/agent-dispatcher`;
+- persist Agent Router config, sessions, and jobs under `~/.codex/agent-router`;
 - write per-job JSONL logs;
 - capture current git worktree state for recorded jobs.
 - run OpenCode through ACP stdio when external launch is explicitly enabled.
@@ -20,13 +20,18 @@ This repository is an alpha implementation. It can:
 - surface ACP session config options and available model choices without setting a model by default.
 - return ACP adapter failures in `failureReason` and `agentErrors`, including provider-side errors such as balance or rate-limit failures.
 
-The dispatcher does not set an ACP model by default. When an ACP agent exposes session `configOptions`, the OpenCode adapter records summarized options and returns model choices in `availableModels`; failures include the same data so Codex can ask the user which model to retry with.
+Agent Router does not set an ACP model by default. When an ACP agent exposes session `configOptions`, the OpenCode adapter records summarized options and returns model choices in `availableModels`; failures include the same data so Codex can ask the user which model to retry with.
 
 External launch is disabled by default. `run_coding_agent` records a completed `record_only` job unless `launchExternalAgents` is enabled. Runnable adapters support both `async=false` synchronous execution and `async=true` background execution. `cancel_coding_agent_job` terminates active in-memory child processes for jobs started by the current MCP server process and records kill metadata on the job.
 
-On MCP server restart, the dispatcher checks the JSON registry before first config or registry use. Jobs left in `queued`, `starting`, or `running` that are not owned by the current server process are marked `orphaned`; when a child PID was persisted, the dispatcher sends `SIGTERM` best-effort before releasing the worktree lock. Sessions move back to `idle` when resumable or `orphaned` otherwise.
+On MCP server restart, Agent Router checks the JSON registry before first config or registry use. Jobs left in `queued`, `starting`, or `running` that are not owned by the current server process are marked `orphaned`; when a child PID was persisted, Agent Router sends `SIGTERM` best-effort before releasing the worktree lock. Sessions move back to `idle` when resumable or `orphaned` otherwise.
 
-External agent processes inherit the dispatcher process environment by default, matching direct terminal usage for tools such as Claude Code. Set `inheritEnvironment=false` through `configure_coding_agent_dispatcher` to restrict child process environment variables to the minimal dispatcher allowlist.
+External agent processes inherit the Agent Router process environment by default, matching direct terminal usage for tools such as Claude Code. Set `inheritEnvironment=false` through `configure_coding_agent_dispatcher` to restrict child process environment variables to the minimal Agent Router allowlist.
+
+## User Guides
+
+- English: [docs/USAGE.md](docs/USAGE.md)
+- 中文: [docs/USAGE.zh-CN.md](docs/USAGE.zh-CN.md)
 
 ## Validate
 
@@ -50,11 +55,11 @@ To verify that the real OpenCode ACP server can initialize and create a session 
 npm run smoke:opencode
 ```
 
-`npm run smoke:opencode:sessions` verifies real OpenCode ACP `session/list` through the dispatcher without sending a prompt or creating a model turn.
+`npm run smoke:opencode:sessions` verifies real OpenCode ACP `session/list` through Agent Router without sending a prompt or creating a model turn.
 
 ## Real E2E
 
-Real E2E scripts call external agents and may incur model cost. They create a temporary git worktree, isolate dispatcher registry/config/logs with `AGENT_DISPATCHER_DATA_DIR`, and ask the selected agent to append one line to `note.txt`.
+Real E2E scripts call external agents and may incur model cost. They create a temporary git worktree, isolate Agent Router registry/config/logs with `AGENT_ROUTER_DATA_DIR`, and ask the selected agent to append one line to `note.txt`.
 
 ```bash
 npm run e2e:opencode -- --opencode-model opencode-go/glm-5.2 --keep
@@ -66,7 +71,7 @@ npm run e2e:codex -- --timeout-sec 600 --keep
 
 Omit `--keep` to clean successful runs automatically. Failed runs are always kept for inspection.
 
-`npm run e2e:sessions:opencode` runs two real OpenCode ACP jobs against the same dispatcher session, defaults the temporary project to `opencode-go/glm-5.2`, verifies provider session resume through the `acp_session_resumed` event, then archives the session.
+`npm run e2e:sessions:opencode` runs two real OpenCode ACP jobs against the same Agent Router session, defaults the temporary project to `opencode-go/glm-5.2`, verifies provider session resume through the `acp_session_resumed` event, then archives the session.
 
 ### Adapter Acceptance Matrix
 
@@ -82,7 +87,7 @@ Last manual acceptance sweep: 2026-06-20.
 
 For a passing real E2E, the JSON output should include `status: "completed"`, a non-empty `providerSessionId` when the provider exposes one, `changedFiles` containing `note.txt`, `failureReason: null`, `agentErrors: []`, and `gitStatus: "M note.txt"`.
 
-If an adapter fails, inspect `job.failureReason`, `job.agentErrors`, and `job.logPath` first. The dispatcher surfaces provider-side errors such as `rate_limit`, `authentication_failed`, insufficient balance, and local transport failures in those fields.
+If an adapter fails, inspect `job.failureReason`, `job.agentErrors`, and `job.logPath` first. Agent Router surfaces provider-side errors such as `rate_limit`, `authentication_failed`, insufficient balance, and local transport failures in those fields.
 
 The plugin manifest can be checked locally with:
 
@@ -108,7 +113,7 @@ node -e 'const fs=require("node:fs"); const p=JSON.parse(fs.readFileSync(".codex
 The personal Codex marketplace entry points at:
 
 ```text
-~/plugins/acp-coding-agent-dispatcher
+~/plugins/agent-router
 ```
 
 This Git repository is the development source. Sync changes into the personal plugin source before reinstalling or testing inside a fresh Codex thread.

@@ -14,7 +14,7 @@ const LONG_RUNNING_MARKER = "RESTART_RECOVERY_LONG_RUNNING";
 const FOLLOWUP_LINE = "Restart recovery follow-up completed.";
 const SUCCESSFUL_RESTART_KILL_STATUSES = new Set(["signal_sent", "not_found"]);
 
-const tempRoot = await mkdtemp(path.join(os.tmpdir(), "acp-dispatcher-restart-recovery-"));
+const tempRoot = await mkdtemp(path.join(os.tmpdir(), "agent-router-restart-recovery-"));
 const tempHome = path.join(tempRoot, "home");
 const dispatcherDataDir = path.join(tempRoot, "dispatcher-data");
 const worktree = path.join(tempRoot, "worktree");
@@ -34,7 +34,7 @@ async function main() {
     const env = {
       ...process.env,
       HOME: tempHome,
-      AGENT_DISPATCHER_DATA_DIR: dispatcherDataDir,
+      AGENT_ROUTER_DATA_DIR: dispatcherDataDir,
       ACP_RESTART_CHILD_PID_FILE: childPidFile,
       ACP_RESTART_SIGNAL_LOG: signalLog,
       PATH: `${tempBin}${path.delimiter}${process.env.PATH ?? ""}`
@@ -86,7 +86,7 @@ async function main() {
     ), 5000);
     assert(
       runningJob.process?.pid === childPid,
-      "Expected dispatcher registry to persist the fake Claude child PID.",
+      "Expected Agent Router registry to persist the fake Claude child PID.",
       runningJob
     );
 
@@ -125,7 +125,7 @@ async function main() {
       includeArchived: true
     }, 5000);
     const orphanedSession = sessions.sessions?.find((session) => session.sessionId === asyncJob.sessionId);
-    assert(orphanedSession?.status === "orphaned", "Expected dispatcher session to be marked orphaned.", sessions);
+    assert(orphanedSession?.status === "orphaned", "Expected Agent Router session to be marked orphaned.", sessions);
 
     const followup = await secondClient.callTool("run_coding_agent", {
       agent: "claude",
@@ -219,8 +219,8 @@ async function prepareTempWorkspace() {
   await mkdir(worktree, { recursive: true });
   await mkdir(tempBin, { recursive: true });
   await git(worktree, ["init", "-b", "master"]);
-  await git(worktree, ["config", "user.email", "dispatcher-e2e@example.invalid"]);
-  await git(worktree, ["config", "user.name", "ACP Dispatcher Restart E2E"]);
+  await git(worktree, ["config", "user.email", "agent-router-e2e@example.invalid"]);
+  await git(worktree, ["config", "user.name", "Agent Router Restart E2E"]);
   await writeFile(path.join(worktree, "note.txt"), "Restart recovery E2E baseline\n", "utf8");
   await git(worktree, ["add", "."]);
   await git(worktree, ["commit", "-m", "Prepare restart recovery E2E baseline"]);

@@ -1,6 +1,6 @@
 {
   "mcpServers": {
-    "acp-coding-agent-dispatcher": {
+    "agent-router": {
       "command": "node",
       "args": [
         "./mcp/server.mjs"

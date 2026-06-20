@@ -25,7 +25,7 @@ async function main() {
       cwd: repoRoot,
       env: {
         ...process.env,
-        AGENT_DISPATCHER_DATA_DIR: dispatcherDataDir
+        AGENT_ROUTER_DATA_DIR: dispatcherDataDir
       }
     });
     await client.start();

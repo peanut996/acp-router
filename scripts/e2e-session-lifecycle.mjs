@@ -18,7 +18,7 @@ async function main() {
     return;
   }
 
-  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "acp-dispatcher-e2e-sessions-"));
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "agent-router-e2e-sessions-"));
   const worktree = path.join(tempRoot, "worktree");
   const dispatcherDataDir = path.join(tempRoot, "dispatcher-data");
   const firstLine = options.firstLine ?? "OpenCode ACP session lifecycle E2E first edit.";
@@ -34,7 +34,7 @@ async function main() {
       cwd: repoRoot,
       env: {
         ...process.env,
-        AGENT_DISPATCHER_DATA_DIR: dispatcherDataDir
+        AGENT_ROUTER_DATA_DIR: dispatcherDataDir
       }
     });
     await client.start();
@@ -102,7 +102,7 @@ async function main() {
     });
     assert(
       continuedStart.sessionId === firstStart.sessionId,
-      "continue_coding_agent_session should reuse the dispatcher session id.",
+      "continue_coding_agent_session should reuse the Agent Router session id.",
       { firstStart, continuedStart }
     );
     assert(
@@ -143,7 +143,7 @@ async function main() {
     });
     assert(
       archiveResult.sessionId === firstStart.sessionId && archiveResult.status === "archived",
-      "archive_coding_agent_session should archive the dispatcher session.",
+      "archive_coding_agent_session should archive the Agent Router session.",
       archiveResult
     );
 
@@ -280,7 +280,7 @@ Runs a real OpenCode ACP session lifecycle E2E against a temporary git worktree.
 This calls external agent models and may incur cost.
 
 Options:
-  --timeout-sec <seconds>       Dispatcher job timeout for each run (default: 600)
+  --timeout-sec <seconds>       Agent Router job timeout for each run (default: 600)
   --first-line <text>           First exact line that OpenCode must append to note.txt
   --second-line <text>          Continued exact line that OpenCode must append to note.txt
   --opencode-model <model>      Project opencode.json model (default: opencode-go/glm-5.2)
@@ -294,12 +294,12 @@ Options:
 async function prepareWorktree({ worktree, options, firstLine, secondLine }) {
   await mkdir(worktree, { recursive: true });
   await git(worktree, ["init", "-b", "master"]);
-  await git(worktree, ["config", "user.email", "dispatcher-e2e@example.invalid"]);
-  await git(worktree, ["config", "user.name", "ACP Dispatcher E2E"]);
+  await git(worktree, ["config", "user.email", "agent-router-e2e@example.invalid"]);
+  await git(worktree, ["config", "user.name", "Agent Router E2E"]);
   await writeFile(
     path.join(worktree, "note.txt"),
     [
-      "ACP Dispatcher session lifecycle E2E baseline",
+      "Agent Router session lifecycle E2E baseline",
       `First expected line: ${firstLine}`,
       `Second expected line: ${secondLine}`,
       ""
@@ -317,7 +317,7 @@ async function prepareWorktree({ worktree, options, firstLine, secondLine }) {
     );
   }
   await git(worktree, ["add", "."]);
-  await git(worktree, ["commit", "-m", "Prepare dispatcher session lifecycle E2E baseline"]);
+  await git(worktree, ["commit", "-m", "Prepare Agent Router session lifecycle E2E baseline"]);
 }
 
 function buildPrompt(line) {

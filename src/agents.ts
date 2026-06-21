@@ -2,7 +2,8 @@ import fs from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
 import path from "node:path";
 
-import { BUILT_IN_AGENTS, COMMAND_TIMEOUT_MS, CONFIG_PATH } from "./constants.js";
+import { AGENT_OVERRIDES, COMMAND_TIMEOUT_MS, CONFIG_PATH } from "./constants.js";
+import type { AgentOverride } from "./constants.js";
 import { safeEnv, isPlainObject, execFileAsync } from "./utils.js";
 import {
   readConfig,
@@ -11,30 +12,9 @@ import {
   buildRegistryInstallHint,
   extractRegistryNpxPackage,
   extractRegistryNpxArgs,
-  buildNpxAcpFallback
+  buildNpxAcpFallback,
+  getRegistryPlatformKey
 } from "./storage.js";
-
-interface BuiltInAgentAcp {
-  executable: string;
-  versionArgs?: string[];
-  adapterStatus: string;
-  label: string;
-  buildArgsKey: string;
-  buildArgs: (ctx: { worktree: string }) => string[];
-}
-
-interface BuiltInAgent {
-  id: string;
-  displayName: string;
-  executable: string;
-  versionArgs: string[];
-  transport: string;
-  command: string;
-  acp?: BuiltInAgentAcp;
-  capabilities: string[];
-  source: string[];
-  notes: string[];
-}
 
 interface DispatcherConfig {
   defaultAgent: string | null;
@@ -84,6 +64,8 @@ interface AcpAdapterSpec {
   available: boolean;
   launchMode?: string | null;
   launchCommand?: string[] | null;
+  baseArgs: string[];
+  extraArgs: string[];
 }
 
 interface EnrichedAgent {
@@ -186,10 +168,11 @@ async function discoverAgents(args: DiscoverAgentsArgs): Promise<DiscoverAgentsR
   const config = await readConfig() as DispatcherConfig;
   const pathEntries = (process.env.PATH ?? "").split(path.delimiter).filter(Boolean);
   const acpRegistry = await readAcpRegistry(config as any, { refresh: args.refresh === true });
-  const agents = await Promise.all(BUILT_IN_AGENTS.map(async (agent) => enrichAgentWithRegistry(
-    await probeAgent(agent, config, pathEntries),
-    acpRegistry
-  )));
+  const registryAgents = Array.from(acpRegistry.agentsByRouterId.entries());
+  const agents = await Promise.all(registryAgents.map(async ([routerId, registryAgent]) => {
+    const override = AGENT_OVERRIDES[routerId];
+    return probeRegistryAgent(registryAgent, routerId, override, config, pathEntries);
+  }));
   const filteredAgents = args.includeNotInstalled === false
     ? agents.filter((agent) => agent.status !== "not_installed")
     : agents;
@@ -253,39 +236,185 @@ async function configureDispatcher(args: ConfigureDispatcherArgs): Promise<{ con
   return { config: next };
 }
 
-function enrichAgentWithRegistry(agent: EnrichedAgent, acpRegistry: AcpRegistryResult): EnrichedAgent {
-  const registryAgent = acpRegistry.agentsByRouterId.get(agent.id);
-  if (!registryAgent) return agent;
-  const installHint = buildRegistryInstallHint(registryAgent);
+function extractRegistryBinaryInfo(registryAgent: any): { cmd: string; args: string[] } | null {
+  const distribution = registryAgent.distribution;
+  const binary = distribution?.binary;
+  if (!isPlainObject(binary)) return null;
+  const platformKey = getRegistryPlatformKey();
+  const target = (binary as Record<string, any>)[platformKey] ?? Object.values(binary).find(isPlainObject);
+  if (!isPlainObject(target) || typeof target.cmd !== "string") return null;
+  const args = Array.isArray(target.args) ? target.args.filter((a: unknown) => typeof a === "string") : [];
+  return { cmd: target.cmd, args };
+}
+
+async function probeRegistryAgent(
+  registryAgent: any,
+  routerId: string,
+  override: AgentOverride | undefined,
+  config: DispatcherConfig,
+  pathEntries: string[]
+): Promise<EnrichedAgent> {
+  const binaryInfo = extractRegistryBinaryInfo(registryAgent);
+  const npxPackage = extractRegistryNpxPackage(registryAgent);
+  const npxArgs = extractRegistryNpxArgs(registryAgent);
+  const hasBinary = binaryInfo !== null;
+  const hasNpx = npxPackage !== null;
   const registryVersion = typeof registryAgent.version === "string" && registryAgent.version.trim()
     ? registryAgent.version.trim()
     : null;
-  const npxPackage = extractRegistryNpxPackage(registryAgent);
-  const npxArgs = extractRegistryNpxArgs(registryAgent);
-  const npxFallback = agent.acp && !agent.acp.available && npxPackage
-    ? buildNpxAcpFallback(npxPackage, npxArgs)
+  const installHint = buildRegistryInstallHint(registryAgent);
+  const extraArgs = override?.extraAcpArgs ?? [];
+
+  let mainExecutable: string | null = null;
+  let acpExecutable: string | null = null;
+
+  if (hasBinary) {
+    mainExecutable = override?.executable ?? path.basename(binaryInfo!.cmd);
+    acpExecutable = override?.acpExecutable ?? mainExecutable;
+  } else if (hasNpx) {
+    if (override?.localCliRequired) {
+      mainExecutable = override.localCliRequired;
+    }
+    if (override?.acpExecutable) {
+      acpExecutable = override.acpExecutable;
+    }
+  }
+
+  const mainSelection = mainExecutable
+    ? await selectExecutable({ executable: mainExecutable, versionArgs: ["--version"] }, pathEntries)
     : null;
-  const acpVersionFromRegistry = Boolean(agent.acp?.available && !agent.acp.version && registryVersion);
-  const notes = acpVersionFromRegistry
-    ? agent.notes.filter((note) => !note.startsWith("ACP version probe failed:"))
-    : agent.notes;
-  const extraNotes: string[] = [];
+  const mainInstalledPath = mainSelection?.installedPath ?? null;
+
+  let acpSelection: SelectExecutableResult | null = null;
+  if (acpExecutable) {
+    if (mainExecutable && acpExecutable === mainExecutable) {
+      acpSelection = mainSelection;
+    } else {
+      acpSelection = await selectExecutable({ executable: acpExecutable, versionArgs: ["--version"] }, pathEntries);
+    }
+  }
+  const acpInstalledPath = acpSelection?.installedPath ?? null;
+
+  let npxFallback: { launchCommand: string[] } | null = null;
+  if (hasNpx && !acpInstalledPath) {
+    if (override?.localCliRequired) {
+      if (mainInstalledPath) {
+        npxFallback = buildNpxAcpFallback(npxPackage!, npxArgs);
+      }
+    } else {
+      npxFallback = buildNpxAcpFallback(npxPackage!, npxArgs);
+    }
+  }
+
+  const disabled = config.disabledAgents.includes(routerId);
+  let status: EnrichedAgent["status"];
+  let transport: string;
+
+  if (disabled) {
+    status = "disabled";
+    transport = "acp_stdio";
+  } else if (override?.localCliRequired && !mainInstalledPath) {
+    status = "not_installed";
+    transport = "acp_stdio";
+  } else if (acpInstalledPath) {
+    status = "available";
+    transport = "acp_stdio";
+  } else if (npxFallback) {
+    status = "available";
+    transport = "acp_stdio";
+  } else if (mainInstalledPath) {
+    status = "available";
+    transport = "cli";
+  } else {
+    status = "not_installed";
+    transport = "acp_stdio";
+  }
+
+  const notes: string[] = [];
+  if (acpInstalledPath) {
+    notes.push(`Found ACP adapter at ${acpInstalledPath}`);
+  }
+  if (mainInstalledPath && mainInstalledPath !== acpInstalledPath) {
+    notes.push(`Found CLI at ${mainInstalledPath}`);
+  }
+  if (mainSelection?.selectionNote) notes.push(mainSelection.selectionNote);
+  if (mainSelection?.note) notes.push(mainSelection.note);
+  if (acpSelection && acpSelection !== mainSelection) {
+    if (acpSelection.selectionNote) notes.push(acpSelection.selectionNote);
+    if (acpSelection.note) notes.push(`ACP version probe failed: ${acpSelection.note.replace(/^Version probe failed: /, "")}`);
+  }
   if (npxFallback) {
-    extraNotes.push(`ACP adapter available via npx: ${npxFallback.launchCommand.join(" ")}`);
+    notes.push(`ACP adapter available via npx: ${npxFallback.launchCommand.join(" ")}`);
   }
   if (installHint) {
-    extraNotes.push(`Install hint: ${installHint}`);
+    notes.push(`Install hint: ${installHint}`);
   }
-  const transport = npxFallback ? "acp_stdio" : agent.transport;
-  const status = npxFallback && agent.status === "not_installed" ? "available" : agent.status;
+  notes.push(`Registry: ${registryAgent.name}${registryVersion ? ` ${registryVersion}` : ""}.`);
+
+  let acp: AcpAdapterSpec | null = null;
+  if (acpInstalledPath || npxFallback) {
+    const acpExeName = acpExecutable ?? (npxPackage ?? routerId);
+    if (acpInstalledPath) {
+      const baseArgs = hasBinary ? binaryInfo!.args : npxArgs;
+      acp = {
+        executable: acpExeName,
+        installedPath: acpInstalledPath,
+        version: acpSelection?.version ?? registryVersion,
+        adapterStatus: `${routerId}_acp`,
+        label: `${registryAgent.name} ACP`,
+        buildArgsKey: acpExeName,
+        available: true,
+        launchMode: null,
+        launchCommand: null,
+        baseArgs,
+        extraArgs
+      };
+    } else {
+      acp = {
+        executable: acpExeName,
+        installedPath: null,
+        version: registryVersion,
+        adapterStatus: `${routerId}_acp`,
+        label: `${registryAgent.name} ACP`,
+        buildArgsKey: acpExeName,
+        available: true,
+        launchMode: "npx",
+        launchCommand: npxFallback!.launchCommand,
+        baseArgs: [],
+        extraArgs
+      };
+    }
+  }
+
+  let command: string;
+  if (acpInstalledPath) {
+    command = `${acpExecutable} <acp stdio>`;
+  } else if (npxFallback) {
+    command = npxFallback.launchCommand.join(" ");
+  } else if (mainInstalledPath) {
+    command = `${mainExecutable} <cli>`;
+  } else {
+    command = registryAgent.name;
+  }
+
+  const source = acpInstalledPath || mainInstalledPath
+    ? ["path", "registry"]
+    : ["registry"];
+
   return {
-    ...agent,
-    version: agent.version ?? (acpVersionFromRegistry || npxFallback ? registryVersion : null),
-    displayName: agent.displayName || registryAgent.name,
-    description: registryAgent.description ?? null,
-    icon: registryAgent.icon ? { kind: "registry_url", value: registryAgent.icon } : agent.icon,
-    transport,
+    id: routerId,
+    displayName: registryAgent.name,
     status,
+    version: acpSelection?.version ?? mainSelection?.version ?? registryVersion ?? null,
+    installedPath: mainInstalledPath,
+    transport,
+    command,
+    acp,
+    source,
+    capabilities: ["file_edit", "shell", "diff_collection"],
+    icon: registryAgent.icon ? { kind: "registry_url", value: registryAgent.icon } : null,
+    notes,
+    description: registryAgent.description ?? null,
     registry: {
       id: registryAgent.id,
       name: registryAgent.name,
@@ -294,71 +423,7 @@ function enrichAgentWithRegistry(agent: EnrichedAgent, acpRegistry: AcpRegistryR
       license: registryAgent.license ?? null,
       distribution: registryAgent.distribution,
       installHint
-    },
-    acp: agent.acp ? {
-      ...agent.acp,
-      available: npxFallback ? true : agent.acp.available,
-      installedPath: npxFallback ? null : agent.acp.installedPath,
-      launchMode: npxFallback ? "npx" : agent.acp.launchMode ?? null,
-      launchCommand: npxFallback ? npxFallback.launchCommand : agent.acp.launchCommand ?? null,
-      version: agent.acp.version ?? (agent.acp.available || npxFallback ? registryVersion : null)
-    } : null,
-    notes: [
-      ...notes,
-      `Registry: ${registryAgent.name}${registryVersion ? ` ${registryVersion}` : ""}.`,
-      ...extraNotes
-    ]
-  };
-}
-
-async function probeAgent(agent: BuiltInAgent, config: DispatcherConfig, pathEntries: string[]): Promise<EnrichedAgent> {
-  const selection = await selectExecutable(agent, pathEntries);
-  const installedPath = selection.installedPath;
-  const acpSelection = agent.acp ? await selectExecutable({
-    executable: agent.acp.executable,
-    versionArgs: agent.acp.versionArgs ?? agent.versionArgs
-  }, pathEntries) : null;
-  const acpInstalledPath = acpSelection?.installedPath ?? null;
-  const disabled = config.disabledAgents.includes(agent.id);
-  const notes: string[] = [];
-  if (acpInstalledPath) {
-    notes.push(`Found ACP adapter at ${acpInstalledPath}`);
-  }
-  if (installedPath) {
-    notes.push(`Found CLI at ${installedPath}`);
-  }
-  if (notes.length === 0) notes.push(...agent.notes);
-  if (selection.selectionNote) notes.push(selection.selectionNote);
-  if (selection.note) notes.push(selection.note);
-  if (acpSelection?.selectionNote) notes.push(acpSelection.selectionNote);
-  if (acpSelection?.note) notes.push(`ACP version probe failed: ${acpSelection.note.replace(/^Version probe failed: /, "")}`);
-  const status: EnrichedAgent["status"] = disabled
-    ? "disabled"
-    : acpInstalledPath || installedPath
-      ? "available"
-      : "not_installed";
-  const transport = acpInstalledPath ? "acp_stdio" : agent.transport;
-  return {
-    id: agent.id,
-    displayName: agent.displayName,
-    status,
-    version: acpSelection?.version ?? selection.version,
-    installedPath,
-    transport,
-    command: acpInstalledPath ? `${agent.acp!.executable} <acp stdio>` : agent.command,
-    acp: agent.acp ? {
-      executable: agent.acp.executable,
-      installedPath: acpInstalledPath,
-      version: acpSelection?.version ?? null,
-      adapterStatus: agent.acp.adapterStatus,
-      label: agent.acp.label,
-      buildArgsKey: agent.acp.buildArgsKey ?? agent.acp.executable,
-      available: Boolean(acpInstalledPath)
-    } : null,
-    source: agent.source,
-    capabilities: agent.capabilities,
-    icon: null,
-    notes
+    }
   };
 }
 
@@ -537,32 +602,30 @@ function parseGitStatusFiles(stdout: string): string[] {
     .filter(Boolean);
 }
 
-function getAcpAdapterArgs(selectedAgent: EnrichedAgent, worktree: string): string[] {
-  if (selectedAgent.id === "opencode") {
-    return ["acp", "--cwd", worktree, "--print-logs", "--log-level", "INFO"];
-  }
-  if (selectedAgent.id === "cursor-agent") {
-    return ["acp"];
-  }
-  if (selectedAgent.id === "devin") {
-    return ["acp"];
-  }
-  return [];
+function resolveExtraArgs(extraArgs: string[], worktree: string): string[] {
+  return extraArgs.map((arg) => arg === "<worktree>" ? worktree : arg);
+}
+
+function getAcpAdapterArgs(acpSpec: AcpAdapterSpec, worktree: string): string[] {
+  const extra = resolveExtraArgs(acpSpec.extraArgs, worktree);
+  if (acpSpec.launchMode === "npx") return extra;
+  return [...acpSpec.baseArgs, ...extra];
 }
 
 function resolveAcpLaunchTarget(acpSpec: AcpAdapterSpec | null, selectedAgent: EnrichedAgent, worktree: string): LaunchTarget | null {
   if (!acpSpec?.available) return null;
+  const adapterArgs = getAcpAdapterArgs(acpSpec, worktree);
   if (acpSpec.launchMode === "npx" && Array.isArray(acpSpec.launchCommand) && acpSpec.launchCommand.length > 0) {
     return {
       command: acpSpec.launchCommand[0],
-      args: [...acpSpec.launchCommand.slice(1), ...getAcpAdapterArgs(selectedAgent, worktree)],
+      args: [...acpSpec.launchCommand.slice(1), ...adapterArgs],
       processLabel: acpSpec.launchCommand.join(" ")
     };
   }
   if (acpSpec.installedPath) {
     return {
       command: acpSpec.installedPath,
-      args: getAcpAdapterArgs(selectedAgent, worktree),
+      args: adapterArgs,
       processLabel: path.basename(acpSpec.installedPath)
     };
   }
@@ -577,9 +640,6 @@ function isAcpRunReady(selectedAgent: EnrichedAgent): boolean {
 }
 
 function buildAcpUnavailableError(selectedAgent: EnrichedAgent): string {
-  if (selectedAgent.id === "cursor-agent") {
-    return "Cursor Agent has no ACP adapter; CLI fallback removed. Install a Cursor ACP adapter or use a different agent.";
-  }
   const installHint = selectedAgent.registry?.installHint ?? null;
   const base = `ACP is required for ${selectedAgent.displayName} and CLI fallback has been removed.`;
   if (installHint) {
@@ -621,8 +681,7 @@ function planLaunch({ launchingEnabled, selectedAgent }: PlanLaunchArgs): Launch
 export {
   discoverAgents,
   configureDispatcher,
-  enrichAgentWithRegistry,
-  probeAgent,
+  probeRegistryAgent,
   compareExecutableProbe,
   compareVersionStrings,
   parseVersionParts,
@@ -642,8 +701,6 @@ export {
 };
 
 export type {
-  BuiltInAgent,
-  BuiltInAgentAcp,
   DispatcherConfig,
   ConfigureDispatcherArgs,
   DiscoverAgentsArgs,

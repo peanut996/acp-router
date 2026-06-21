@@ -3,32 +3,17 @@ import path from "node:path";
 
 export type PermissionProfile = "plan" | "acceptEdits" | "bypassPermissions";
 
-export interface AcpAdapterSpec {
-  executable: string;
-  versionArgs: string[];
-  adapterStatus: string;
-  label: string;
-  buildArgsKey: string;
-  buildArgs: (args: { worktree: string }) => string[];
-}
-
-export interface BuiltInAgent {
-  id: string;
-  displayName: string;
-  executable: string;
-  versionArgs: string[];
-  transport: string;
-  command: string;
-  acp?: AcpAdapterSpec;
-  capabilities: string[];
-  source: string[];
-  notes: string[];
+export interface AgentOverride {
+  executable?: string;
+  localCliRequired?: string;
+  extraAcpArgs?: string[];
+  acpExecutable?: string;
 }
 
 export type AcpModeMap = Record<string, Record<PermissionProfile, string>>;
 
 const SERVER_NAME = "acp-router";
-const SERVER_VERSION = "0.8.0";
+const SERVER_VERSION = "0.10.0";
 const DATA_DIR = process.env.ACP_ROUTER_DATA_DIR
   ? path.resolve(process.env.ACP_ROUTER_DATA_DIR)
   : path.join(os.homedir(), ".acp-router");
@@ -72,103 +57,12 @@ const ACP_MODE_MAP: AcpModeMap = {
   }
 };
 
-const BUILT_IN_AGENTS: BuiltInAgent[] = [
-  {
-    id: "opencode",
-    displayName: "OpenCode",
-    executable: "opencode",
-    versionArgs: ["--version"],
-    transport: "acp_stdio",
-    command: "opencode acp --cwd <worktree>",
-    acp: {
-      executable: "opencode",
-      versionArgs: ["--version"],
-      adapterStatus: "opencode_acp",
-      label: "OpenCode ACP",
-      buildArgsKey: "opencode",
-      buildArgs: ({ worktree }) => ["acp", "--cwd", worktree, "--print-logs", "--log-level", "ERROR"]
-    },
-    capabilities: ["session_list", "session_continue", "file_edit", "shell", "diff_collection"],
-    source: ["path", "registry"],
-    notes: ["Native ACP adapter target for V1."]
-  },
-  {
-    id: "cursor-agent",
-    displayName: "Cursor Agent",
-    executable: "agent",
-    versionArgs: ["--version"],
-    transport: "acp_stdio",
-    command: "agent acp",
-    acp: {
-      executable: "agent",
-      versionArgs: ["--version"],
-      adapterStatus: "cursor_agent_acp",
-      label: "Cursor Agent ACP",
-      buildArgsKey: "agent",
-      buildArgs: () => ["acp"]
-    },
-    capabilities: ["file_edit", "shell", "permission_modes", "diff_collection"],
-    source: ["path", "registry"],
-    notes: ["Cursor CLI with native ACP support via `agent acp`. Pre-authenticate with `agent login`."]
-  },
-  {
-    id: "claude",
-    displayName: "Claude Code",
-    executable: "claude",
-    versionArgs: ["--version"],
-    transport: "cli",
-    command: "claude -p --output-format stream-json",
-    acp: {
-      executable: "claude-agent-acp",
-      versionArgs: ["--version"],
-      adapterStatus: "claude_acp",
-      label: "Claude Agent ACP",
-      buildArgsKey: "claude-agent-acp",
-      buildArgs: () => []
-    },
-    capabilities: ["file_edit", "shell", "permission_modes", "diff_collection"],
-    source: ["path"],
-    notes: ["ACP adapter preferred when claude-agent-acp is installed; otherwise CLI fallback target."]
-  },
-  {
-    id: "codex",
-    displayName: "Codex CLI",
-    executable: "codex",
-    versionArgs: ["--version"],
-    transport: "cli",
-    command: "codex exec",
-    acp: {
-      executable: "codex-acp",
-      versionArgs: ["--version"],
-      adapterStatus: "codex_acp",
-      label: "Codex ACP",
-      buildArgsKey: "codex-acp",
-      buildArgs: () => []
-    },
-    capabilities: ["file_edit", "shell", "diff_collection"],
-    source: ["path"],
-    notes: ["ACP adapter preferred when codex-acp is installed. Use cautiously to avoid recursive control loops; require an isolated worktree."]
-  },
-  {
-    id: "devin",
-    displayName: "Devin",
-    executable: "devin",
-    versionArgs: ["--version"],
-    transport: "acp_stdio",
-    command: "devin acp",
-    acp: {
-      executable: "devin",
-      versionArgs: ["--version"],
-      adapterStatus: "devin_acp",
-      label: "Devin ACP",
-      buildArgsKey: "devin",
-      buildArgs: () => ["acp"]
-    },
-    capabilities: ["file_edit", "shell", "diff_collection"],
-    source: ["path", "registry"],
-    notes: ["Devin CLI coding agent by Cognition. Launches via binary distribution when not on PATH."]
-  }
-];
+const AGENT_OVERRIDES: Record<string, AgentOverride> = {
+  "cursor-agent": { executable: "agent" },
+  codex: { localCliRequired: "codex", acpExecutable: "codex-acp" },
+  claude: { acpExecutable: "claude-agent-acp" },
+  opencode: { extraAcpArgs: ["--cwd", "<worktree>", "--print-logs", "--log-level", "INFO"] }
+};
 
 const AGENT_ENV_ALLOWLIST: readonly string[] = [
   "ANTHROPIC_API_KEY",
@@ -216,7 +110,7 @@ export {
   TERMINAL_JOB_STATUSES,
   MAX_RECURSION_DEPTH,
   ACP_MODE_MAP,
-  BUILT_IN_AGENTS,
+  AGENT_OVERRIDES,
   AGENT_ENV_ALLOWLIST,
   AGENT_ERROR_PATTERNS,
   AGENT_ERROR_KEY_PATTERN

@@ -633,15 +633,14 @@ function buildAcpRegistryResult(registryAgents: RegistryAgent[], meta: AcpRegist
   return { agentsByRouterId, meta };
 }
 
-function mapRegistryAgentToRouterId(registryId: string): string | null {
-  const mapping: Record<string, string> = {
-    "claude-acp": "claude",
-    "codex-acp": "codex",
-    opencode: "opencode",
-    cursor: "cursor-agent",
-    devin: "devin"
-  };
-  return mapping[registryId] ?? null;
+const REGISTRY_ID_OVERRIDES: Record<string, string> = {
+  "claude-acp": "claude",
+  "codex-acp": "codex",
+  cursor: "cursor-agent"
+};
+
+function mapRegistryAgentToRouterId(registryId: string): string {
+  return REGISTRY_ID_OVERRIDES[registryId] ?? registryId;
 }
 
 function extractRegistryNpxPackage(registryAgent: RegistryAgent): string | null {

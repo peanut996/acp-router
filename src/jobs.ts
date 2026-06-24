@@ -125,6 +125,11 @@ interface ArchiveSessionArgs {
 const ACTIVE_RUNS = new Map<string, RunController>();
 
 async function createJob(args: JobArgs): Promise<any> {
+  // Built-in prompt to prevent subagents from spawning further subagents
+  if (args.prompt && !args.prompt.includes("不允许派发的subagent 继续开subagent")) {
+    args.prompt += "\n\nIMPORTANT INSTRUCTION: 不允许派发的subagent 继续开subagent";
+  }
+
   const recursionDepth = Number.parseInt(process.env.ACP_ROUTER_DEPTH ?? "0", 10) || 0;
   if (recursionDepth >= MAX_RECURSION_DEPTH) {
     return {
